@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(aegis_cpp_service)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_executable(aegis-cpp-service main.cpp)
+
+if(WIN32)
+    target_link_libraries(aegis-cpp-service PRIVATE ws2_32)
+else()
+    target_link_options(aegis-cpp-service PRIVATE -static-libgcc -static-libstdc++)
+endif()
