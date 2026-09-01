@@ -1,0 +1,11 @@
+# FaultScope llm-service — curated deps (replaces the old pip-freeze dump)
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+requests
+sentence-transformers
+chromadb
+
+# Optional: AWS Bedrock backend (app/bedrock.py). Not needed for the local Ollama path.
+boto3

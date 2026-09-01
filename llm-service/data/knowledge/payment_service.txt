@@ -1,0 +1,37 @@
+Aegis Payment Service
+
+The Payment Service communicates with:
+
+- PostgreSQL
+- Redis
+- Kafka
+
+Common incidents:
+
+Database:
+- Connection timeout
+- Connection pool exhaustion
+- Slow queries
+
+Kafka:
+- Processing delay
+- Consumer lag
+- Message processing failure
+
+Redis:
+- Connection failure
+- Cache timeout
+- High latency
+
+Database troubleshooting:
+
+Check PostgreSQL connection count,
+connection pool utilization,
+query latency and application logs.
+
+A database connection timeout may indicate
+connection pool exhaustion or PostgreSQL
+resource constraints.
+
+Payment Service depends on reliable database
+connectivity for transaction processing.

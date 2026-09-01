@@ -1,3 +1,0 @@
-D:/Downloads/Project/Aegis/cpp-service/build/CMakeFiles/aegis-cpp-service.dir
-D:/Downloads/Project/Aegis/cpp-service/build/CMakeFiles/edit_cache.dir
-D:/Downloads/Project/Aegis/cpp-service/build/CMakeFiles/rebuild_cache.dir

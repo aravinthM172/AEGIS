@@ -1,0 +1,45 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.coverage
+.mypy_cache/
+.ruff_cache/
+
+# --- Env / secrets ---
+.env
+*.env
+!.env.example
+!**/.env.example
+
+# --- Databases / local data ---
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Java / Maven ---
+target/
+*.class
+
+# --- C++ / CMake ---
+cpp-service/build/
+build/
+*.obj
+*.exe
+
+# --- Vector store ---
+**/chroma_db/
+
+# --- Editor / OS ---
+.vscode/
+.idea/
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# --- Spark ---
+spark-warehouse/
+/tmp/

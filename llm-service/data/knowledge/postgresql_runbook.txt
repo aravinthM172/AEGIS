@@ -1,0 +1,33 @@
+Aegis PostgreSQL Incident Runbook
+
+Symptoms:
+- Database connection timeout
+- Connection pool exhaustion
+- Increased API latency
+- HTTP 500 errors
+- Database request failures
+
+Investigation:
+1. Check active PostgreSQL connections.
+2. Check configured connection pool size.
+3. Check long-running queries.
+4. Check PostgreSQL CPU utilization.
+5. Check PostgreSQL memory utilization.
+6. Check recent application deployments.
+7. Check whether application instances increased.
+
+Possible causes:
+- Connection pool exhaustion
+- Long-running database queries
+- PostgreSQL resource exhaustion
+- Sudden increase in application traffic
+- Incorrect connection pool configuration
+
+Recommended actions:
+1. Identify affected service instances.
+2. Inspect PostgreSQL active connections.
+3. Investigate long-running queries.
+4. Verify application connection pool configuration.
+5. Check PostgreSQL resource utilization.
+6. Scale database resources if required.
+7. Monitor connection count after remediation.

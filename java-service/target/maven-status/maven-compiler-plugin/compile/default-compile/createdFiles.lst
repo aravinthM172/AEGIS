@@ -1,6 +1,0 @@
-com\aegis\service\IncidentController.class
-com\aegis\service\IncidentConsumer.class
-com\aegis\service\AegisJavaServiceApplication.class
-com\aegis\service\HealthController.class
-com\aegis\service\Incident.class
-com\aegis\service\IncidentRepository.class
