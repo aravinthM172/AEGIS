@@ -12,3 +12,9 @@ __pycache__
 .env
 cpp-service
 java-service
+.claude
+legacy
+llm-service
+llm-service-backup-before-structured-analysis
+spark-job
+stash*
