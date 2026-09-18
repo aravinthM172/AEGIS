@@ -152,6 +152,13 @@ services:
     build:
       context: ./cpp-service
     container_name: aegis-cpp-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      TELEMETRY_TOPIC: telemetry
+      SERVICE_NAME: cpp-service
     ports:
       - "8082:8082"
     networks:

@@ -4,6 +4,26 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(aegis-cpp-service main.cpp)
 
+# Kafka telemetry (librdkafka). Optional so the plain Windows build still works;
+# the Docker build passes -DREQUIRE_KAFKA=ON so it can never ship without it.
+option(REQUIRE_KAFKA "Fail the build if librdkafka is missing" OFF)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(RDKAFKA QUIET rdkafka)
+endif()
+
+if(RDKAFKA_FOUND)
+    message(STATUS "librdkafka found: Kafka telemetry enabled")
+    target_compile_definitions(aegis-cpp-service PRIVATE FAULTSCOPE_HAVE_KAFKA)
+    target_include_directories(aegis-cpp-service PRIVATE ${RDKAFKA_INCLUDE_DIRS})
+    target_link_directories(aegis-cpp-service PRIVATE ${RDKAFKA_LIBRARY_DIRS})
+    target_link_libraries(aegis-cpp-service PRIVATE ${RDKAFKA_LIBRARIES})
+elseif(REQUIRE_KAFKA)
+    message(FATAL_ERROR "librdkafka not found but REQUIRE_KAFKA=ON")
+else()
+    message(WARNING "librdkafka not found: building WITHOUT Kafka telemetry")
+endif()
+
 if(WIN32)
     target_link_libraries(aegis-cpp-service PRIVATE ws2_32)
 else()
