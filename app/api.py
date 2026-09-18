@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import Incident, TelemetryEventRow
-from app.kafka_client import publish_incident
+from app.kafka_client import check_kafka, publish_incident
 from app.redis_client import get_redis
 
 router = APIRouter(prefix="/api", tags=["Aegis"])
@@ -47,9 +47,18 @@ def database_health(db: Session = Depends(get_db)):
 
 @router.get("/kafka")
 def kafka_health():
+    try:
+        details = check_kafka()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Kafka unavailable: {type(exc).__name__}: {exc}"
+        )
+
     return {
         "service": "kafka",
-        "status": "available"
+        "status": "available",
+        **details
     }
 
 
