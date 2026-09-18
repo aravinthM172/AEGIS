@@ -108,6 +108,27 @@ services:
     networks:
       - aegis-network
 
+  telemetry-consumer:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: aegis-telemetry-consumer
+    command: python -m app.telemetry_consumer
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://aegis:aegis@postgres:5432/aegis
+      REDIS_URL: redis://redis:6379/0
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      TELEMETRY_TOPIC: telemetry
+    networks:
+      - aegis-network
+
   java-service:
     build:
       context: ./java-service

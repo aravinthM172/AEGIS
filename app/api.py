@@ -5,7 +5,7 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models import Incident
+from app.models import Incident, TelemetryEventRow
 from app.kafka_client import publish_incident
 from app.redis_client import get_redis
 
@@ -232,3 +232,50 @@ def metrics(db: Session = Depends(get_db)):
         pass
 
     return result
+
+@router.get("/telemetry/services")
+def telemetry_services():
+    """Live per-service state from Redis (written by the telemetry consumer)."""
+    try:
+        r = get_redis()
+        services = {}
+        for key in r.scan_iter("service:health:*"):
+            services[key.removeprefix("service:health:")] = r.hgetall(key)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis unavailable: {exc}")
+
+    return {"count": len(services), "services": services}
+
+
+@router.get("/telemetry/events")
+def telemetry_events(
+    service: str | None = None,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+):
+    """Most recent stored telemetry events (Postgres)."""
+    query = db.query(TelemetryEventRow).order_by(TelemetryEventRow.timestamp.desc())
+    if service:
+        query = query.filter(TelemetryEventRow.service == service)
+
+    rows = query.limit(min(max(limit, 1), 500)).all()
+
+    return {
+        "count": len(rows),
+        "events": [
+            {
+                "event_id": row.event_id,
+                "timestamp": row.timestamp.isoformat(),
+                "service": row.service,
+                "event_type": row.event_type,
+                "severity": row.severity,
+                "request_id": row.request_id,
+                "trace_id": row.trace_id,
+                "latency_ms": row.latency_ms,
+                "status_code": row.status_code,
+                "error_type": row.error_type,
+                "metadata": row.meta,
+            }
+            for row in rows
+        ],
+    }
