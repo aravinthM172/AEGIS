@@ -1,4 +1,4 @@
-from sqlalchemy import Column, DateTime, Float, Integer, String, Text
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -59,3 +59,28 @@ class TelemetryEventRow(Base):
     status_code = Column(Integer)
     error_type = Column(String(100))
     meta = Column("metadata", JSONB, nullable=False, default=dict)
+
+
+class ServiceRow(Base):
+    __tablename__ = "services"
+
+    name = Column(String(100), primary_key=True)
+    kind = Column(String(30), nullable=False)  # service | database | cache | broker
+    technology = Column(String(100))
+    container = Column(String(100))  # docker container name (used by fault injection later)
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class ServiceDependencyRow(Base):
+    """source DEPENDS ON target."""
+    __tablename__ = "service_dependencies"
+    __table_args__ = (UniqueConstraint("source", "target", "relation"),)
+
+    id = Column(Integer, primary_key=True)
+    source = Column(String(100), ForeignKey("services.name"), nullable=False, index=True)
+    target = Column(String(100), ForeignKey("services.name"), nullable=False, index=True)
+    relation = Column(String(30), nullable=False)  # reads_writes | produces | consumes | calls
+    origin = Column(String(20), nullable=False, default="declared")  # declared | observed (later)
+    evidence = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
