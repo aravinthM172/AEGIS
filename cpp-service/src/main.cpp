@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <csignal>
 #include <chrono>
 #include <iostream>
 #include <string>
@@ -114,6 +115,12 @@ constexpr std::uint64_t kDefaultComputeN = 100000;
 
 std::atomic<std::uint64_t> requestCount{0};
 
+std::atomic<bool> stopRequested{false};
+
+extern "C" void onStopSignal(int) {
+    stopRequested.store(true);
+}
+
 } // namespace
 
 int main() {
@@ -175,11 +182,24 @@ int main() {
 
     telemetry::Emitter emitter;
 
-    while (true) {
+    // Graceful shutdown: no SA_RESTART, so accept() returns EINTR and the loop can exit;
+    // leaving main() then runs the emitter destructor, which flushes pending telemetry.
+#ifdef _WIN32
+    std::signal(SIGINT, onStopSignal);
+#else
+    struct sigaction sa {};
+    sa.sa_handler = onStopSignal;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGTERM, &sa, nullptr);
+    sigaction(SIGINT, &sa, nullptr);
+#endif
+
+    while (!stopRequested.load()) {
         SOCKET clientSocket = accept(serverSocket, nullptr, nullptr);
 
         if (clientSocket == INVALID_SOCKET) {
-            continue;
+            continue;  // EINTR on a stop signal: the loop condition decides
         }
 
         char buffer[4096] = {};
@@ -299,6 +319,7 @@ int main() {
         closeSocket(clientSocket);
     }
 
+    std::cout << "Aegis C++ Service stopping\n";
     closeSocket(serverSocket);
 #ifdef _WIN32
     WSACleanup();

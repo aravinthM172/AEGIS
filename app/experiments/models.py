@@ -45,8 +45,10 @@ class ExperimentRow(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     baseline_started_at = Column(DateTime(timezone=True))
-    inject_started_at = Column(DateTime(timezone=True))
-    inject_ended_at = Column(DateTime(timezone=True))
+    inject_started_at = Column(DateTime(timezone=True))   # injector.inject() called
+    fault_applied_at = Column(DateTime(timezone=True))    # inject() returned: the fault is really in effect
+    rollback_started_at = Column(DateTime(timezone=True)) # injector.rollback() called: fault window ends
+    inject_ended_at = Column(DateTime(timezone=True))     # rollback() returned: target restored
     finished_at = Column(DateTime(timezone=True))
 
     result = Column(JSONType)  # filled by blast-radius analysis (Phase 6)
@@ -60,3 +62,18 @@ class ExperimentEventRow(Base):
     timestamp = Column(DateTime(timezone=True), nullable=False)
     event_type = Column(String(40), nullable=False)
     detail = Column(JSONType, nullable=False, default=dict)
+
+
+# create_all() never alters existing tables; add columns introduced after first deploy.
+_ADDED_COLUMNS = (
+    ("experiments", "fault_applied_at", "TIMESTAMPTZ"),
+    ("experiments", "rollback_started_at", "TIMESTAMPTZ"),
+)
+
+
+def ensure_columns(engine) -> None:
+    if engine.dialect.name != "postgresql":
+        return
+    with engine.begin() as conn:
+        for table, column, ddl in _ADDED_COLUMNS:
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ddl}"))

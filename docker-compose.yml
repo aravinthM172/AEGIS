@@ -3,6 +3,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: aegis-postgres
+    labels:
+      faultscope.injectable: "true"
     environment:
       POSTGRES_USER: aegis
       POSTGRES_PASSWORD: aegis
@@ -22,6 +24,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: aegis-redis
+    labels:
+      faultscope.injectable: "true"
     ports:
       - "6379:6379"
     volumes:
@@ -37,6 +41,8 @@ services:
   kafka:
     image: apache/kafka:4.0.0
     container_name: aegis-kafka
+    labels:
+      faultscope.injectable: "true"
     ports:
       - "9092:9092"
     environment:
@@ -87,6 +93,9 @@ services:
       DATABASE_URL: postgresql+psycopg://aegis:aegis@postgres:5432/aegis
       REDIS_URL: redis://redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      FAULTSCOPE_ENV: local
+      FAULT_AGENT_URL: http://fault-agent:8095
+      FAULT_AGENT_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
     ports:
       - "8000:8000"
     networks:
@@ -134,6 +143,8 @@ services:
       context: .
       dockerfile: app/Dockerfile
     container_name: aegis-gateway
+    labels:
+      faultscope.injectable: "true"
     command: uvicorn gateway.main:app --host 0.0.0.0 --port 8090
     depends_on:
       kafka:
@@ -154,6 +165,8 @@ services:
     build:
       context: ./java-service
     container_name: aegis-java-service
+    labels:
+      faultscope.injectable: "true"
     depends_on:
       kafka:
         condition: service_healthy
@@ -174,6 +187,8 @@ services:
     build:
       context: ./cpp-service
     container_name: aegis-cpp-service
+    labels:
+      faultscope.injectable: "true"
     depends_on:
       kafka:
         condition: service_healthy
@@ -183,6 +198,22 @@ services:
       SERVICE_NAME: cpp-service
     ports:
       - "8082:8082"
+    networks:
+      - aegis-network
+
+  fault-agent:
+    build: ./fault-agent
+    image: faultscope/fault-agent:local
+    container_name: aegis-fault-agent
+    environment:
+      FAULT_AGENT_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
+      FAULT_AGENT_IMAGE: faultscope/fault-agent:local
+      FAULT_AGENT_STATE: /data/state.json
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - fault_agent_data:/data
+    ports:
+      - "127.0.0.1:8095:8095"
     networks:
       - aegis-network
 
@@ -241,6 +272,7 @@ services:
       - aegis-network
 
 volumes:
+  fault_agent_data:
   postgres_data:
   redis_data:
   kafka_data:

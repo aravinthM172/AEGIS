@@ -60,11 +60,17 @@ def test_timing_limits():
     assert check(baseline_s=0)[0] == []
 
 
-def test_real_run_rejected_while_fault_has_no_injector():
-    assert not any(f.implemented for f in FAULTS.values())
-    errors, _ = check(dry_run=False)
-    assert any("no real injector" in e for e in errors)
-    assert check(dry_run=True)[0] == []
+def test_real_run_allowed_only_for_faults_with_a_real_injector():
+    implemented = {n for n, f in FAULTS.items() if f.implemented}
+    assert implemented == {"stop_container", "pause_container", "restart_container", "latency"}
+    assert check(fault_type="stop_container", dry_run=False)[0] == []
+    assert check(fault_type="latency", parameters={"latency_ms": 500}, dry_run=False)[0] == []
+    params = {"cpu_stress": {"cpu_percent": 50}, "memory_stress": {"memory_mb": 64},
+              "http_error": {"error_rate": 0.5}}
+    for name, p in params.items():
+        errors, _ = check(fault_type=name, parameters=p, dry_run=False)
+        assert any("no real injector" in e for e in errors), name
+        assert check(fault_type=name, parameters=p, dry_run=True)[0] == []
 
 
 def test_catalog_lists_every_fault_with_implemented_flag():

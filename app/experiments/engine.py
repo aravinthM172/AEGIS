@@ -20,7 +20,11 @@ from sqlalchemy.exc import IntegrityError
 
 from app.database import SessionLocal
 from app.experiments.catalog import validate_request
-from app.experiments.injectors import InjectorUnavailable, injector_for as default_injector_for
+from app.experiments.injectors import (
+    InjectorUnavailable,
+    injector_for as default_injector_for,
+    real_run_preflight as default_real_run_preflight,
+)
 from app.experiments.models import ExperimentEventRow, ExperimentRow
 from app.models import ServiceRow
 
@@ -80,6 +84,8 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
             "created_at": _iso(exp.created_at),
             "baseline_started_at": _iso(exp.baseline_started_at),
             "inject_started_at": _iso(exp.inject_started_at),
+            "fault_applied_at": _iso(exp.fault_applied_at),
+            "rollback_started_at": _iso(exp.rollback_started_at),
             "inject_ended_at": _iso(exp.inject_ended_at),
             "finished_at": _iso(exp.finished_at),
         },
@@ -95,9 +101,11 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
 
 class ExperimentEngine:
     def __init__(self, session_factory=SessionLocal, injector_for=default_injector_for,
-                 time_scale: float = 1.0, poll_interval_s: float = 1.0):
+                 time_scale: float = 1.0, poll_interval_s: float = 1.0,
+                 real_run_preflight=default_real_run_preflight):
         self.session_factory = session_factory
         self.injector_for = injector_for
+        self.real_run_preflight = real_run_preflight  # () -> list[str]; consulted only for real runs
         self.time_scale = time_scale  # test seam: shrink waits without changing recorded values
         self.poll_interval_s = poll_interval_s
 
@@ -117,6 +125,8 @@ class ExperimentEngine:
                 duration_s=duration_s, baseline_s=baseline_s, recovery_s=recovery_s,
                 dry_run=dry_run, services=services,
             )
+            if not errors and not dry_run:
+                errors = self.real_run_preflight()
             if errors:
                 raise ValidationFailed(errors)
 
@@ -229,6 +239,9 @@ class ExperimentEngine:
 
     def _run_lifecycle(self, exp_id: str) -> None:
         exp = self.get(exp_id)
+        with self.session_factory() as db:
+            service = db.get(ServiceRow, exp["target"])
+            exp["container"] = service.container if service else None
         try:
             injector = self.injector_for(exp)
         except InjectorUnavailable as exc:
@@ -246,7 +259,9 @@ class ExperimentEngine:
             else:
                 self._update(exp_id, phase="injecting", inject_started_at=_now())
                 inject_attempted = True
-                self._event(exp_id, "fault_injected", injector.inject(exp))
+                detail = injector.inject(exp)
+                self._update(exp_id, fault_applied_at=_now())
+                self._event(exp_id, "fault_injected", detail)
                 if self._wait(exp_id, exp["duration_s"]):
                     outcome = "ABORTED"
         except Exception as exc:
@@ -255,6 +270,7 @@ class ExperimentEngine:
 
         if inject_attempted:
             try:
+                self._update(exp_id, rollback_started_at=_now())
                 detail = injector.rollback(exp)
                 self._update(exp_id, inject_ended_at=_now())
                 self._event(exp_id, "fault_removed", detail)

@@ -54,10 +54,11 @@ def factory(tmp_path):
     return session_factory
 
 
-def make_engine(factory, injector=None, scale=0.02):
+def make_engine(factory, injector=None, scale=0.02, preflight=lambda: []):
     injector = injector or RecordingInjector()
     return ExperimentEngine(session_factory=factory, injector_for=lambda exp: injector,
-                            time_scale=scale, poll_interval_s=0.01), injector
+                            time_scale=scale, poll_interval_s=0.01,
+                            real_run_preflight=preflight), injector
 
 
 def create(engine, **overrides):
@@ -88,7 +89,8 @@ def test_full_lifecycle_records_ordered_events_and_timeline(factory):
                                 "recovery_started", "completed"]
     assert injector.calls == ["inject", "rollback"]
     t = exp["timeline"]
-    assert t["baseline_started_at"] <= t["inject_started_at"] <= t["inject_ended_at"] <= t["finished_at"]
+    assert (t["baseline_started_at"] <= t["inject_started_at"] <= t["fault_applied_at"]
+            <= t["rollback_started_at"] <= t["inject_ended_at"] <= t["finished_at"])
     assert exp["phase"] is None and exp["dry_run"] is True
 
 
@@ -175,5 +177,31 @@ def test_invalid_request_creates_nothing(factory):
         create(engine, target="control-plane")
     assert any("protected" in e for e in info.value.errors)
     with pytest.raises(ValidationFailed):
-        create(engine, dry_run=False)  # no real injector yet
+        create(engine, fault_type="cpu_stress", parameters={"cpu_percent": 50}, dry_run=False)
     assert engine.list_experiments() == []
+
+
+def test_real_run_is_blocked_by_preflight_and_dry_run_is_not(factory):
+    engine, _ = make_engine(factory, preflight=lambda: ["fault agent unreachable"])
+    with pytest.raises(ValidationFailed) as info:
+        create(engine, dry_run=False)
+    assert info.value.errors == ["fault agent unreachable"]
+    assert engine.list_experiments() == []
+
+    dry = create(engine, dry_run=True)  # preflight is never consulted for dry runs
+    wait_for(engine, dry["id"], lambda e: e["status"] == "COMPLETED")
+
+
+def test_real_run_passes_the_container_to_the_injector(factory):
+    seen = {}
+
+    class Capturing(RecordingInjector):
+        def inject(self, exp):
+            seen.update(exp)
+            return super().inject(exp)
+
+    engine, _ = make_engine(factory, Capturing())
+    exp = create(engine, dry_run=False)
+    wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")
+    assert seen["container"] == "aegis-java-service" and seen["id"] == exp["id"]
+    assert engine.get(exp["id"])["injector"] == "docker"

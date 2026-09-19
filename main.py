@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from app.api import router
 from app.experiments import models as _experiment_models  # noqa: F401  (registers tables)
 from app.experiments.engine import get_engine
+from app.experiments.models import ensure_columns
 from app.experiments.routes import router as experiments_router
 from app.database import Base, SessionLocal, engine
 from app.topology_graph import TopologyError
@@ -32,6 +33,7 @@ install_telemetry(app)
 def init_db():
     try:
         Base.metadata.create_all(bind=engine)
+        ensure_columns(engine)
         with SessionLocal() as db:
             seed_registry(db)
         recovered = get_engine().recover_orphans()

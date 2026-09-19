@@ -42,17 +42,22 @@ FAULTS: dict[str, FaultSpec] = {f.fault_type: f for f in (
         "stop_container",
         "docker stop the target for the duration, then start it. The container's DNS name "
         "disappears, so callers see slow name-resolution failures.",
-        ALL_KINDS),
+        ALL_KINDS, implemented=True),
     FaultSpec(
         "pause_container",
         "Freeze the target (docker pause). Callers see timeouts instead of refusals.",
-        ALL_KINDS),
+        ALL_KINDS, implemented=True),
+    FaultSpec(
+        "restart_container",
+        "Restart the target once (docker restart), then observe for the duration. Models a crash-and-recover.",
+        ALL_KINDS, implemented=True),
     FaultSpec(
         "latency",
-        "Add network latency to traffic to/from the target.",
+        "Add network latency to the target's outgoing traffic (tc netem in its network namespace).",
         ALL_KINDS,
         (ParamSpec("latency_ms", "int", 10, 10000, unit="ms"),
-         ParamSpec("jitter_ms", "int", 0, 5000, required=False, default=0, unit="ms"))),
+         ParamSpec("jitter_ms", "int", 0, 5000, required=False, default=0, unit="ms")),
+        implemented=True),
     FaultSpec(
         "http_error",
         "Make the target's HTTP endpoints fail a fraction of requests (needs a fault hook in the service).",
