@@ -52,13 +52,32 @@ The control plane seeded its service registry once at startup. Started before Po
 Docker Compose hides with `depends_on`), it logged "will retry on first use" and never did, leaving an empty
 registry. Initialisation now retries in the background until the database is reachable.
 
+## Fault injection on Kubernetes (measured)
+
+The control plane in the cluster runs with `FAULTSCOPE_RUNTIME=kubernetes` and injects faults through the Kubernetes
+API (`app/experiments/k8s_injector.py`), not Docker. RBAC (`rbac.yaml`) limits it to Deployments and pods of the
+`faultscope` namespace, and only Deployments labelled `faultscope.injectable: "true"` can be touched (the infrastructure
+Deployments are deliberately not labelled). Supported faults: `stop_container` (scale to zero) and `restart_container`
+(delete all pods). Anything else is refused up front with a clear message.
+
+| Test (one run each) | Result |
+|---|---|
+| `stop_container` on `cpp-service` under 4 requests/s, real experiment through the API | 98.4 % of synthetic-user requests degraded; measured propagation `cpp-service -> java-service -> gateway`; recovery 2.2 s; the Deployment returned to 1/1 ready with the fault annotations removed |
+| `latency` on `cpp-service` | refused: "fault 'latency' cannot be injected on this runtime" |
+| Control-plane pod deleted **in the middle of a 120 s fault** | the restarted control plane reverted the fault (scaled back to 1) and marked the experiment `ABORTED` with its rollback executed |
+
+How it stays safe: the intent (experiment id, original replica count, expiry time) is written to annotations on the
+Deployment **before** anything changes; recovery clears them only after the replicas are ready again; a watchdog inside
+the control plane reverts expired faults every 15 s and start-up reverts anything left behind.
+
 ## Limits (be honest about these)
 
-- **Fault injection is Docker-only.** The fault-agent drives Docker; there is no Kubernetes injector, so the
-  cluster's control plane refuses real experiments (no `FAULTSCOPE_ENV` / `FAULT_AGENT_URL`). Dry runs and all
-  read/analysis features work. The chaos above was done with `kubectl` and a load pod, not with the experiment engine.
-- **`ROLLBACK_DEPLOYMENT`, `SCALE_SERVICE` and `RESTART_SERVICE` are not wired to Kubernetes.** The policy engine
-  still reports `ROLLBACK_DEPLOYMENT` as unsupported. A `kubectl`-based executor (`rollout undo`, `scale`,
-  `rollout restart`) is the natural next step; the cluster behaviour it would use is demonstrated above.
+- **Only two faults work on Kubernetes**: stop (scale to zero) and restart (delete pods). Latency, CPU, memory and
+  HTTP-error faults are Docker-only for now.
+- **The safety net is weaker than on Docker.** The Docker fault-agent is a separate process that reverts faults even if
+  the control plane dies. Here the watchdog lives *inside* the control plane, so if it dies the fault stays until
+  Kubernetes restarts it (seconds to a minute in the test above).
+- **`ROLLBACK_DEPLOYMENT`, `SCALE_SERVICE` and `RESTART_SERVICE` are not wired to Kubernetes** (remediation, unlike
+  fault injection). The policy engine still reports `ROLLBACK_DEPLOYMENT` as unsupported.
 - **Data is not durable** (`emptyDir`), a single node, no Ingress, no HPA, no network policies, no resource
   requests/limits. It is a demo cluster.

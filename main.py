@@ -21,6 +21,7 @@ from app.prediction.routes import router as prediction_router
 from app.remediation import models as _remediation_models  # noqa: F401  (registers tables)
 from app.remediation.routes import router as remediation_router
 from app.experiments.engine import get_engine
+from app.experiments.injectors import start_runtime_recovery
 from app.experiments.models import ensure_columns
 from app.experiments.routes import router as experiments_router
 from app.database import Base, SessionLocal, engine
@@ -106,6 +107,7 @@ def _initialize_with_retry(attempts: int = 90, delay_s: float = 5.0) -> None:
 
 @app.on_event("startup")
 def init_db():
+    start_runtime_recovery()  # Kubernetes runtime only: revert leftover faults, start the expiry watchdog
     check_startup()  # warns about development secrets outside local mode; FAULTSCOPE_STRICT_SECURITY=1 refuses to start
     # Off the startup path so the API (and its health probe) is available immediately.
     threading.Thread(target=_initialize_with_retry, name="init", daemon=True).start()

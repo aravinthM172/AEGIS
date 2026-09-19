@@ -68,6 +68,6 @@ which is what the containers use.
 - One workload, one host, small samples; accuracy elsewhere is unknown. Repetitions per scenario are 3–5.
 - The local 3B model's explanations are mediocre (e.g. it mislabelled a ratio as a percentage); grounding prevents fabrication, not weak reasoning. Larger models are a config change (`OLLAMA_MODEL`).
 - Early warning is unreliable in the first ~8 s of an incident (silence needs a full window), and Kafka outages are misattributed.
-- Kubernetes: no fault injector or executor; `ROLLBACK_DEPLOYMENT` and `ENABLE_FALLBACK` are `unsupported` in the policy engine.
+- Kubernetes: fault injection supports only stop (scale to zero) and restart; no executor for remediation; `ROLLBACK_DEPLOYMENT` and `ENABLE_FALLBACK` are `unsupported` in the policy engine.
 - No cloud deployment. Auth is API-key roles on state-changing endpoints only; reads are open. Dev keys are in `docker-compose.yml`.
 - Legacy `llm-service/`, `legacy/` and the `kafka-consumer` compose service are unused leftovers from the earlier "Aegis" project.

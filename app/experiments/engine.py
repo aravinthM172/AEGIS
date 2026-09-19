@@ -24,6 +24,7 @@ from app.experiments.injectors import (
     InjectorUnavailable,
     injector_for as default_injector_for,
     real_run_preflight as default_real_run_preflight,
+    supported_real_faults as default_supported_faults,
 )
 from app.experiments.models import ExperimentEventRow, ExperimentRow
 from app.experiments.workload import WorkloadRunner, load_profile
@@ -111,7 +112,9 @@ class ExperimentEngine:
     def __init__(self, session_factory=SessionLocal, injector_for=default_injector_for,
                  time_scale: float = 1.0, poll_interval_s: float = 1.0,
                  real_run_preflight=default_real_run_preflight,
-                 workload_factory=default_workload_factory, on_finished=None, settle_s: float = 6.0):
+                 workload_factory=default_workload_factory, on_finished=None, settle_s: float = 6.0,
+                 supported_faults=default_supported_faults):
+        self.supported_faults = supported_faults  # () -> set of fault types the runtime can really inject, or None
         self.workload_factory = workload_factory
         self.on_finished = on_finished  # (exp_id) -> None, e.g. blast-radius analysis
         self.settle_s = settle_s        # let the telemetry consumer catch up before analysing
@@ -144,6 +147,9 @@ class ExperimentEngine:
                 errors.append("workload_rps must be between 0 and 25")
             if isinstance(workload_n, bool) or not isinstance(workload_n, int) or not 1 <= workload_n <= 5_000_000:
                 errors.append("workload_n must be an integer between 1 and 5000000")
+            supported = None if dry_run else self.supported_faults()
+            if supported is not None and fault_type not in supported:
+                errors.append(f"fault '{fault_type}' cannot be injected on this runtime (supported: {', '.join(sorted(supported))})")
             if not errors and not dry_run:
                 errors = self.real_run_preflight()
             if errors:

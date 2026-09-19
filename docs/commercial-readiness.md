@@ -71,4 +71,4 @@ has no LICENSE file yet, which means "all rights reserved" by default).
 | Read endpoints have no login | **Available, off by default**: `FAULTSCOPE_REQUIRE_AUTH_FOR_READS=1` (`app/security.py`, tested live) |
 | Dev secrets as defaults | **Partly**: startup warns outside local mode; `FAULTSCOPE_STRICT_SECURITY=1` refuses to start. The defaults themselves are still in `docker-compose.yml`, `k8s/*.yaml` and `.env.example` |
 | Kafka/Redis without authentication, TLS, per-user identity, tenant separation | Open |
-| Kubernetes fault injector | Open |
+| Kubernetes fault injector | **Partly done**: stop and restart work through the Kubernetes API with least-privilege RBAC (`k8s/rbac.yaml`); latency, CPU, memory and HTTP-error faults are still Docker-only |

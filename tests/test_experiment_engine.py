@@ -302,3 +302,13 @@ def test_workload_intensity_is_validated_and_passed_to_the_runner(factory):
     assert exp["workload_n"] == 2_000_000
     wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")
     assert FakeWorkload.instances[0].exp["workload_n"] == 2_000_000
+
+
+def test_faults_the_runtime_cannot_inject_are_refused_for_real_runs_but_not_dry_runs(factory):
+    engine = ExperimentEngine(session_factory=factory, injector_for=lambda exp: RecordingInjector(), time_scale=0.02,
+                              poll_interval_s=0.01, real_run_preflight=lambda: [],
+                              supported_faults=lambda: frozenset({"stop_container"}))
+    with pytest.raises(ValidationFailed, match="cannot be injected on this runtime"):
+        create(engine, fault_type="latency", parameters={"latency_ms": 100}, dry_run=False)
+    exp = create(engine, fault_type="latency", parameters={"latency_ms": 100}, dry_run=True)
+    wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")

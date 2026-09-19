@@ -1,3 +1,4 @@
 resources:
   - infra.yaml
+  - rbac.yaml
   - workload.yaml

@@ -10,7 +10,9 @@ DockerInjector delegates to the fault-agent, the only component with Docker acce
 The agent independently enforces a container allowlist and reverts every fault after
 a TTL, so a dead control plane cannot leave a fault applied.
 """
+import logging
 import os
+import threading
 from typing import Protocol
 
 import httpx
@@ -115,10 +117,57 @@ def docker_injector() -> DockerInjector:
     return _docker
 
 
+def runtime() -> str:
+    """Where real faults are injected: 'docker' (via the fault-agent, default) or 'kubernetes' (in-cluster API)."""
+    return os.getenv("FAULTSCOPE_RUNTIME", "docker")
+
+
+_k8s = None
+
+
+def k8s_injector():
+    global _k8s
+    if _k8s is None:
+        from app.experiments.k8s_injector import K8sApi, K8sError, KubernetesInjector
+
+        try:
+            _k8s = KubernetesInjector(K8sApi())
+        except K8sError as exc:
+            raise InjectorUnavailable(str(exc))
+    return _k8s
+
+
 def injector_for(exp: dict) -> Injector:
     if exp["dry_run"]:
         return DryRunInjector()
-    return docker_injector()
+    return k8s_injector() if runtime() == "kubernetes" else docker_injector()
+
+
+def supported_real_faults() -> frozenset | None:
+    """Fault types the active runtime can really inject; None means no restriction beyond the catalog."""
+    if runtime() == "kubernetes":
+        from app.experiments.k8s_injector import SUPPORTED_FAULTS
+
+        return SUPPORTED_FAULTS
+    return None
+
+
+def start_runtime_recovery() -> None:
+    """Kubernetes only: revert faults left behind by a previous control plane, then guard expiries with a watchdog."""
+    if runtime() != "kubernetes":
+        return
+
+    def run() -> None:
+        try:
+            injector = k8s_injector()
+            reverted = injector.recover_expired(include_unexpired=True)
+            if reverted:
+                logging.getLogger("experiments").warning("reverted faults left on: %s", reverted)
+            injector.start_watchdog()
+        except Exception:
+            logging.getLogger("experiments").exception("kubernetes fault recovery could not start")
+
+    threading.Thread(target=run, name="k8s-recovery", daemon=True).start()
 
 
 def real_run_preflight() -> list[str]:
@@ -128,7 +177,12 @@ def real_run_preflight() -> list[str]:
         errors.append("real fault injection is only allowed when FAULTSCOPE_ENV=local")
         return errors
     try:
-        docker_injector().health()
+        if runtime() == "kubernetes":
+            k8s_injector().api.list_deployments()
+        else:
+            docker_injector().health()
     except InjectorUnavailable as exc:
         errors.append(str(exc))
+    except Exception as exc:  # K8sError: API unreachable or RBAC refused
+        errors.append(f"kubernetes API check failed: {exc}")
     return errors

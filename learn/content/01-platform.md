@@ -19,8 +19,8 @@ The title still says "Aegis" — that's the project's earlier name. FaultScope g
 5. On startup a **background thread** runs `_initialize_with_retry`, which creates tables, adds missing columns, loads the service list from `config/topology.json`, rolls back experiments left half-done by a crash, and re-indexes the AI knowledge base.
 
 ### Key parts
-@snippet 75-87 | _initialize: everything that must happen before the system is useful
-@snippet 90-104 | Retry loop: keep trying until the database is reachable
+@snippet 76-88 | _initialize: everything that must happen before the system is useful
+@snippet 91-105 | Retry loop: keep trying until the database is reachable
 
 ### Why the retry loop exists
 Docker Compose can wait for Postgres to be "healthy" (`depends_on`). **Kubernetes cannot** — pods start in any order. The first Kubernetes test found the control plane started before Postgres, gave up once, and stayed with an empty service list forever. This loop (5 s apart, up to 90 attempts) fixed a real bug found by running on Kubernetes.

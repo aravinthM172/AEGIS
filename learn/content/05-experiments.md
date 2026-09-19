@@ -39,13 +39,14 @@ The engine never touches Docker. It talks to an **injector** with two methods: `
 ### How it works
 - The contract says `rollback` **must be idempotent and safe even if inject never ran**, because the engine calls it on every exit path.
 - The TTL sent to the agent is `duration_s + 20 s` — a safety margin so normal rollbacks always happen first; the TTL only fires if the control plane died.
-- `real_run_preflight()` gives reasons a real run can't start: it needs `FAULTSCOPE_ENV=local` (real fault injection is only allowed on a local machine) and the agent must answer its health check.
+- `real_run_preflight()` gives reasons a real run can't start: it needs `FAULTSCOPE_ENV=local` (real fault injection is only allowed on a local machine) and the agent must answer its health check (or, with `FAULTSCOPE_RUNTIME=kubernetes`, the Kubernetes API must answer).
+- `injector_for` picks the runtime: the Docker fault-agent by default, or the in-cluster [[app/experiments/k8s_injector.py]]. `supported_real_faults()` tells the engine which faults the runtime can really inject, so an unsupported one is refused *before* anything starts.
 - Network problems become `InjectorError` / `InjectorUnavailable`, which the engine handles.
 
 ### Key parts
-@snippet 35-49 | DryRunInjector: does nothing, says so
-@snippet 72-92 | DockerInjector.inject and rollback
-@snippet 124-134 | Preflight: the two conditions for a real experiment
+@snippet 37-51 | DryRunInjector: does nothing, says so
+@snippet 74-94 | DockerInjector.inject and rollback
+@snippet 173-188 | Preflight: the conditions for a real experiment (Docker or Kubernetes)
 
 ### Connects to
 - [[fault-agent/agent/main.py]] — the receiver
@@ -93,13 +94,13 @@ The most important file in the control plane. `ExperimentEngine` creates experim
 - **workload**: if `workload_rps > 0`, synthetic traffic runs for the whole experiment and its results are stored with it.
 
 ### Key parts
-@snippet 138-150 | create: validate everything before touching anything
-@snippet 161-175 | Insert, and translate the race into a clear error
-@snippet 297-312 | Baseline then inject, catching any failure
-@snippet 314-326 | Rollback on every path; a failed rollback blocks everything
-@snippet 328-339 | Recovery window, stop workload, finish
-@snippet 341-351 | _wait: sleeps, but wakes instantly on abort
-@snippet 370-381 | _finish: status + final event in one transaction
+@snippet 141-156 | create: validate everything before touching anything
+@snippet 167-181 | Insert, and translate the race into a clear error
+@snippet 303-318 | Baseline then inject, catching any failure
+@snippet 320-332 | Rollback on every path; a failed rollback blocks everything
+@snippet 334-345 | Recovery window, stop workload, finish
+@snippet 347-357 | _wait: sleeps, but wakes instantly on abort
+@snippet 376-387 | _finish: status + final event in one transaction
 
 ??Why does the engine record `fault_applied_at` *after* `inject()` returns instead of before calling it? || Between "asked to inject" and "inject finished" the fault may only be partly in effect (e.g. a container still stopping). Analysis compares baseline vs fault windows, so the fault window must start when the fault is truly on.
 
@@ -204,3 +205,34 @@ For targets other than the demo chain, this file says where to send synthetic us
 
 ### Key parts
 @snippet 1-12 | The whole file
+
+## FILE app/experiments/k8s_injector.py | Fault injection through the Kubernetes API (stop and restart) | code
+### What it is
+The Kubernetes version of "break something safely", used when `FAULTSCOPE_RUNTIME=kubernetes` (see [[app/experiments/injectors.py]]). It talks to the Kubernetes API using the pod's own **service account**, whose permissions ([[k8s/rbac.yaml]]) reach only Deployments and pods in one namespace.
+
+### How it works
+- **Allowlist**: only a Deployment labelled `faultscope.injectable: "true"` can be touched, otherwise it refuses — the same rule as the Docker agent.
+- **Intent first**: before changing anything it writes three **annotations** on the Deployment: the experiment id, the original replica count, and an expiry time. Because the record lives on the Kubernetes object itself, *any* later process can find and undo the fault.
+- **`stop_container`** scales the Deployment to 0 and waits until no live pod remains (pods that are merely terminating don't count). **`restart_container`** deletes every pod and waits until all the old ones are gone.
+- **Rollback** scales back to the original count, waits for that many *ready* replicas, and only then removes the annotations — so if recovery fails the intent is still recorded. It is idempotent.
+- **Dead-man's switch**: `recover_expired` restores any Deployment whose expiry has passed; a watchdog thread runs it every 15 s, and at start-up everything left behind is restored.
+- Timeouts are explicit: it never claims success it didn't verify.
+- One fault per Deployment; other fault types (latency, CPU, memory, HTTP errors) are refused as unsupported.
+
+### Key parts
+@snippet 27-31 | The allowlist label and the annotation names
+@snippet 148-183 | inject: allowlist, intent first, then stop or restart
+@snippet 185-208 | rollback: restore, verify, then clear the intent
+@snippet 210-226 | The watchdog and start-up recovery
+
+??Why record the fault as annotations on the Deployment instead of only in memory? || Memory disappears when the control plane dies. Annotations live in Kubernetes itself, so a restarted control plane (or anyone else) can see exactly what was changed and how to undo it. It was tested by deleting the control-plane pod mid-fault.
+??What is weaker about this than the Docker fault-agent? || The watchdog runs inside the control plane. If that process dies, the fault stays until Kubernetes restarts it; the Docker agent is a separate program that keeps guarding.
+
+## FILE tests/test_k8s_injector.py | Tests for the Kubernetes injector, using a fake API | test
+### What it is
+11 tests with an in-memory fake of the Kubernetes API: stop then rollback restores replicas and clears the intent; **intent is recorded before anything changes**; unlabelled or unknown deployments and unsupported faults are refused untouched; one fault per Deployment; rollback is idempotent; restart replaces every pod; **pods that never terminate time out instead of claiming success**; a failed recovery keeps the intent; the watchdog restores expired faults only, and start-up recovery restores all; runtime selection.
+
+### Key parts
+@snippet 124-128 | Intent before change
+@snippet 183-187 | Stuck pods: timeout, not success
+@snippet 200-213 | Watchdog and start-up recovery

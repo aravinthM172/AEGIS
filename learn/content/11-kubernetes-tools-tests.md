@@ -5,7 +5,7 @@ Vocabulary: a **Pod** = one or more containers scheduled together; a **Deploymen
 
 What was actually measured there: kill the java-service Pod with **1 replica → 14.3 % of requests failed**; with **2 replicas → 0 %**. A bad image deployed to cpp-service left the two healthy Pods serving (0 of 560 failed) and `rollout undo` restored it.
 
-Limits, honestly: the cluster can't run the fault-injection experiments (the fault-agent is Docker-only), and nothing here is durable (`emptyDir`).
+Fault injection also works here now, through the Kubernetes API, but only for **stop** (scale to zero) and **restart** (delete pods) — see [[app/experiments/k8s_injector.py]]. Other faults are still Docker-only, and nothing here is durable (`emptyDir`).
 
 ## FILE k8s/kustomization.yaml | Apply everything with one command | config
 ### What it is
@@ -37,20 +37,34 @@ Deployments and Services for cpp-service, java-service, gateway, telemetry-consu
 ### How it works
 - **No start-order guarantees**: Pods crash-loop until Postgres/Kafka are up, then converge. That revealed a real bug in the control plane (see [[main.py]]'s retry loop).
 - Java gets a **startupProbe** (up to 30 × 5 s) so Spring Boot isn't killed by the liveness check while it is still starting.
-- The control plane has **no** `FAULTSCOPE_ENV` or `FAULT_AGENT_URL`, so real fault injection is refused here: dry runs and all read/analysis features work.
+- The control plane runs as a dedicated **service account** ([[k8s/rbac.yaml]]) with `FAULTSCOPE_ENV=local` and `FAULTSCOPE_RUNTIME=kubernetes`, so real experiments inject faults through the Kubernetes API. Only Deployments labelled `faultscope.injectable: "true"` (cpp-service, java-service, gateway) can be touched; the infrastructure is deliberately not labelled.
 - `terminationGracePeriodSeconds: 10` on cpp-service — it now handles SIGTERM cleanly.
 
 ### Key parts
 @snippet 39-71 | java-service: env, startupProbe, readiness, liveness
-@snippet 137-165 | control-plane: note that real faults are refused
+@snippet 137-167 | control-plane: service account, local mode, Kubernetes runtime
+
+## FILE k8s/rbac.yaml | The minimum permissions the control plane gets on Kubernetes | infra
+### What it is
+RBAC (role-based access control) says what a program may do in the cluster. This file creates a **ServiceAccount** for the control plane, a **Role** and a **RoleBinding** that connects them.
+
+### How it works
+- The Role is **namespaced**: it only applies inside `faultscope`, never to other namespaces, nodes, secrets or config maps.
+- It allows: read/list/patch Deployments, read/patch their `scale`, and read/list/delete pods. Nothing else.
+- On top of RBAC the injector applies its own allowlist label, so even those permissions can't be used on unlabelled Deployments.
+
+### Key parts
+@snippet 4-21 | The service account and the role's rules
+@snippet 22-26 | Binding the role to the service account
 
 ## FILE k8s/README.md | How to run it, and what was measured | docs
 ### What it is
-Step-by-step instructions (create the cluster, load images, apply, port-forward, delete) and the measured results with their honest limits: no Kubernetes fault injector, `ROLLBACK_DEPLOYMENT` not wired to `kubectl`, non-durable data.
+Step-by-step instructions (create the cluster, load images, apply, port-forward, delete), the measured cluster results, the measured fault-injection results (a real stop experiment, a refused unsupported fault, and a control-plane crash mid-fault that was repaired on restart) and the honest limits: only stop and restart are supported, the watchdog lives inside the control plane, remediation isn't wired to Kubernetes, data isn't durable.
 
 ### Key parts
 @snippet 34-47 | What was measured on the cluster
-@snippet 55-64 | Limits
+@snippet 55-71 | Fault injection on Kubernetes, measured
+@snippet 73-83 | Limits
 
 ## FILE docs/cloud-plan.md | The AWS plan — a plan only, nothing was created | docs
 ### What it is

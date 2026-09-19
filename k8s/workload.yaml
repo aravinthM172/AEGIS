@@ -2,7 +2,7 @@
 # telemetry consumer and control plane so the cluster is observed exactly like the compose stack.
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: cpp-service, namespace: faultscope, labels: { app: cpp-service } }
+metadata: { name: cpp-service, namespace: faultscope, labels: { app: cpp-service, faultscope.injectable: "true" } }
 spec:
   replicas: 1
   selector: { matchLabels: { app: cpp-service } }
@@ -38,7 +38,7 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: java-service, namespace: faultscope, labels: { app: java-service } }
+metadata: { name: java-service, namespace: faultscope, labels: { app: java-service, faultscope.injectable: "true" } }
 spec:
   replicas: 1
   selector: { matchLabels: { app: java-service } }
@@ -79,7 +79,7 @@ spec:
 ---
 apiVersion: apps/v1
 kind: Deployment
-metadata: { name: gateway, namespace: faultscope, labels: { app: gateway } }
+metadata: { name: gateway, namespace: faultscope, labels: { app: gateway, faultscope.injectable: "true" } }
 spec:
   replicas: 1
   selector: { matchLabels: { app: gateway } }
@@ -143,6 +143,7 @@ spec:
   template:
     metadata: { labels: { app: control-plane } }
     spec:
+      serviceAccountName: control-plane   # RBAC in rbac.yaml: only Deployments/pods of this namespace
       enableServiceLinks: false
       containers:
         - name: control-plane
@@ -155,7 +156,8 @@ spec:
             - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
             - { name: WORKLOAD_URL, value: "http://gateway:8090" }
             - { name: FAULTSCOPE_API_KEYS, value: "dev-operator-key:operator,dev-admin-key:admin" }
-            # no FAULTSCOPE_ENV / FAULT_AGENT_URL: real fault injection is Docker-only, so real runs are refused here
+            - { name: FAULTSCOPE_ENV, value: local }          # demo cluster: real faults allowed
+            - { name: FAULTSCOPE_RUNTIME, value: kubernetes } # inject through the Kubernetes API (stop, restart), not Docker
           readinessProbe:
             httpGet: { path: /health, port: 8000 }
             periodSeconds: 5

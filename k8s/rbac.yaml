@@ -1,0 +1,26 @@
+# Least privilege for the control plane's Kubernetes fault injector (app/experiments/k8s_injector.py).
+# Namespaced Role only: it cannot touch other namespaces, nodes, secrets or configmaps. The injector additionally
+# refuses any Deployment that is not labelled faultscope.injectable=true.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: control-plane, namespace: faultscope }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: faultscope-injector, namespace: faultscope }
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale"]
+    verbs: ["get", "patch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: faultscope-injector, namespace: faultscope }
+subjects: [{ kind: ServiceAccount, name: control-plane, namespace: faultscope }]
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: faultscope-injector }
