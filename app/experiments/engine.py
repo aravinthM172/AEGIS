@@ -26,6 +26,7 @@ from app.experiments.injectors import (
     real_run_preflight as default_real_run_preflight,
 )
 from app.experiments.models import ExperimentEventRow, ExperimentRow
+from app.experiments.workload import WorkloadRunner
 from app.models import ServiceRow
 
 logger = logging.getLogger("experiments")
@@ -75,6 +76,7 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
         "baseline_s": exp.baseline_s,
         "recovery_s": exp.recovery_s,
         "dry_run": exp.dry_run,
+        "workload_rps": exp.workload_rps or 0.0,
         "injector": exp.injector,
         "status": exp.status,
         "phase": exp.phase,
@@ -99,12 +101,22 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
     return data
 
 
+def default_workload_factory(exp: dict) -> WorkloadRunner:
+    return WorkloadRunner(rps=exp["workload_rps"], trace_prefix=f"exp-{exp['id'][:8]}")
+
+
 class ExperimentEngine:
     def __init__(self, session_factory=SessionLocal, injector_for=default_injector_for,
                  time_scale: float = 1.0, poll_interval_s: float = 1.0,
-                 real_run_preflight=default_real_run_preflight):
+                 real_run_preflight=default_real_run_preflight,
+                 workload_factory=default_workload_factory, on_finished=None, settle_s: float = 6.0):
+        self.workload_factory = workload_factory
+        self.on_finished = on_finished  # (exp_id) -> None, e.g. blast-radius analysis
+        self.settle_s = settle_s        # let the telemetry consumer catch up before analysing
         self.session_factory = session_factory
         self.injector_for = injector_for
+        # In-process abort signal: the DB flag is unreachable/slow when the experiment targets Postgres.
+        self._abort_signals: dict[str, threading.Event] = {}
         self.real_run_preflight = real_run_preflight  # () -> list[str]; consulted only for real runs
         self.time_scale = time_scale  # test seam: shrink waits without changing recorded values
         self.poll_interval_s = poll_interval_s
@@ -113,7 +125,7 @@ class ExperimentEngine:
 
     def create(self, *, target: str, fault_type: str, duration_s: int, parameters: dict | None = None,
                baseline_s: int = 10, recovery_s: int = 15, dry_run: bool = True,
-               hypothesis: str | None = None, name: str | None = None) -> dict:
+               hypothesis: str | None = None, name: str | None = None, workload_rps: float = 0.0) -> dict:
         """Validate, persist and start an experiment. Raises ValidationFailed / ActiveExperimentExists."""
         with self.session_factory() as db:
             services = {
@@ -125,6 +137,8 @@ class ExperimentEngine:
                 duration_s=duration_s, baseline_s=baseline_s, recovery_s=recovery_s,
                 dry_run=dry_run, services=services,
             )
+            if not 0 <= workload_rps <= 25:
+                errors.append("workload_rps must be between 0 and 25")
             if not errors and not dry_run:
                 errors = self.real_run_preflight()
             if errors:
@@ -136,7 +150,7 @@ class ExperimentEngine:
                 hypothesis=hypothesis,
                 target=target, fault_type=fault_type, parameters=params,
                 duration_s=duration_s, baseline_s=baseline_s, recovery_s=recovery_s,
-                dry_run=dry_run, injector="dry_run" if dry_run else "docker",
+                dry_run=dry_run, workload_rps=workload_rps, injector="dry_run" if dry_run else "docker",
                 status="PENDING", abort_requested=False, active_slot=True,
             )
             try:
@@ -192,6 +206,7 @@ class ExperimentEngine:
             db.add(ExperimentEventRow(experiment_id=exp_id, timestamp=_now(),
                                       event_type="abort_requested", detail={}))
             db.commit()
+        self._abort_signals.setdefault(exp_id, threading.Event()).set()
         return self.get(exp_id)
 
     def retry_rollback(self, exp_id: str) -> dict:
@@ -239,12 +254,35 @@ class ExperimentEngine:
 
     def _run_lifecycle(self, exp_id: str) -> None:
         exp = self.get(exp_id)
+        runner = None
+        if exp["workload_rps"]:
+            runner = self.workload_factory(exp)
+            runner.start()
+        state = {"stopped": False}
+
+        def stop_workload() -> None:
+            """Stop traffic and store what was sent. Idempotent; runs before the experiment is finished."""
+            if runner is not None and not state["stopped"]:
+                state["stopped"] = True
+                self._update(exp_id, result={"workload": runner.stop()})
+
+        try:
+            self._lifecycle(exp_id, stop_workload)
+        finally:
+            try:
+                stop_workload()
+            except Exception:
+                logger.exception("experiment %s: could not stop the workload", exp_id)
+
+    def _lifecycle(self, exp_id: str, stop_workload) -> None:
+        exp = self.get(exp_id)
         with self.session_factory() as db:
             service = db.get(ServiceRow, exp["target"])
             exp["container"] = service.container if service else None
         try:
             injector = self.injector_for(exp)
         except InjectorUnavailable as exc:
+            stop_workload()
             self._finish(exp_id, "FAILED", str(exc))
             return
 
@@ -279,6 +317,7 @@ class ExperimentEngine:
                 self._event(exp_id, "rollback_failed", {"error": f"{type(exc).__name__}: {exc}"})
                 self._update(exp_id, status="ROLLBACK_FAILED", phase=None,
                              error=f"rollback failed: {type(exc).__name__}: {exc}")
+                stop_workload()
                 return  # keep the slot occupied: the fault may still be applied
 
         if outcome == "COMPLETED":
@@ -291,18 +330,20 @@ class ExperimentEngine:
                 logger.exception("experiment %s failed during recovery", exp_id)
                 outcome, error = "FAILED", f"{type(exc).__name__}: {exc}"
 
+        stop_workload()
         self._finish(exp_id, outcome, error)
 
     def _wait(self, exp_id: str, seconds: float) -> bool:
         """Sleep for `seconds`; return True early if an abort was requested."""
         deadline = time.monotonic() + seconds * self.time_scale
+        signal = self._abort_signals.setdefault(exp_id, threading.Event())
         while True:
-            if self._abort_requested(exp_id):
+            if signal.is_set() or self._abort_requested(exp_id):
                 return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
-            time.sleep(min(self.poll_interval_s, remaining))
+            signal.wait(min(self.poll_interval_s, remaining))
 
     # ---- persistence helpers ----------------------------------------------------
 
@@ -326,6 +367,24 @@ class ExperimentEngine:
                      finished_at=_now(), error=error)
         self._event(exp_id, {"COMPLETED": "completed", "ABORTED": "aborted"}.get(status, "failed"),
                     {"error": error} if error else {})
+        self._schedule_analysis(exp_id)
+
+    def _schedule_analysis(self, exp_id: str) -> None:
+        if self.on_finished is None:
+            return
+
+        def job() -> None:
+            time.sleep(self.settle_s * self.time_scale)
+            try:
+                self.on_finished(exp_id)
+            except Exception as exc:
+                logger.exception("analysis of %s failed", exp_id)
+                try:
+                    self._event(exp_id, "analysis_failed", {"error": f"{type(exc).__name__}: {exc}"})
+                except Exception:
+                    pass
+
+        threading.Thread(target=job, name=f"analysis-{exp_id[:8]}", daemon=True).start()
 
 
 _engine: ExperimentEngine | None = None
@@ -334,5 +393,7 @@ _engine: ExperimentEngine | None = None
 def get_engine() -> ExperimentEngine:
     global _engine
     if _engine is None:
-        _engine = ExperimentEngine()
+        from app.analysis.service import default_hook  # late import: analysis depends on the models
+
+        _engine = ExperimentEngine(on_finished=default_hook)
     return _engine

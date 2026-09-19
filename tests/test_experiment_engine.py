@@ -205,3 +205,88 @@ def test_real_run_passes_the_container_to_the_injector(factory):
     wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")
     assert seen["container"] == "aegis-java-service" and seen["id"] == exp["id"]
     assert engine.get(exp["id"])["injector"] == "docker"
+
+
+class FakeWorkload:
+    instances = []
+
+    def __init__(self, exp):
+        self.exp = exp
+        self.started = False
+        self.stopped = 0
+        FakeWorkload.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped += 1
+        return {"target_rps": self.exp["workload_rps"], "sent": 42, "ok": 40, "failed": 2}
+
+
+def engine_with_workload(factory, hook=None, injector=None, scale=0.02):
+    FakeWorkload.instances = []
+    injector = injector or RecordingInjector()
+    return ExperimentEngine(session_factory=factory, injector_for=lambda exp: injector, time_scale=scale,
+                            poll_interval_s=0.01, real_run_preflight=lambda: [],
+                            workload_factory=FakeWorkload, on_finished=hook, settle_s=1.0), injector
+
+
+def test_workload_runs_for_the_experiment_and_its_stats_are_stored(factory):
+    engine, _ = engine_with_workload(factory)
+    exp = wait_for(engine, create(engine, workload_rps=4)["id"], lambda e: e["status"] == "COMPLETED")
+    (runner,) = FakeWorkload.instances
+    assert runner.started and runner.stopped >= 1
+    assert exp["workload_rps"] == 4
+    assert exp["result"] == {"workload": {"target_rps": 4, "sent": 42, "ok": 40, "failed": 2}}
+
+
+def test_no_workload_is_created_when_rps_is_zero(factory):
+    engine, _ = engine_with_workload(factory)
+    wait_for(engine, create(engine)["id"], lambda e: e["status"] == "COMPLETED")
+    assert FakeWorkload.instances == []
+
+
+def test_workload_is_stopped_when_the_experiment_is_aborted_or_fails(factory):
+    engine, _ = engine_with_workload(factory, scale=0.5)
+    exp = create(engine, workload_rps=2)
+    wait_for(engine, exp["id"], lambda e: e["phase"] == "injecting")
+    engine.abort(exp["id"])
+    wait_for(engine, exp["id"], lambda e: e["status"] == "ABORTED")
+    assert FakeWorkload.instances[0].stopped >= 1
+
+    engine2, _ = engine_with_workload(factory, injector=RecordingInjector(fail_inject=True))
+    failing = wait_for(engine2, create(engine2, workload_rps=2)["id"], lambda e: e["status"] == "FAILED")
+    assert FakeWorkload.instances[0].stopped >= 1 and failing["result"]["workload"]["sent"] == 42
+
+
+def test_workload_rate_is_bounded(factory):
+    engine, _ = engine_with_workload(factory)
+    with pytest.raises(ValidationFailed, match="workload_rps"):
+        create(engine, workload_rps=500)
+    with pytest.raises(ValidationFailed, match="workload_rps"):
+        create(engine, workload_rps=-1)
+
+
+def test_analysis_hook_runs_after_the_experiment_finishes(factory):
+    called = []
+    engine, _ = engine_with_workload(factory, hook=called.append)
+    exp = create(engine)
+    wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")
+    deadline = time.monotonic() + 3
+    while not called and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert called == [exp["id"]]
+
+
+def test_failing_analysis_hook_is_recorded_not_swallowed(factory):
+    def boom(exp_id):
+        raise RuntimeError("telemetry unavailable")
+
+    engine, _ = engine_with_workload(factory, hook=boom)
+    exp = create(engine)
+    wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")
+    done = wait_for(engine, exp["id"], lambda e: "analysis_failed" in event_types(e))
+    failed = next(e for e in done["events"] if e["event_type"] == "analysis_failed")
+    assert "telemetry unavailable" in failed["detail"]["error"]
+    assert done["status"] == "COMPLETED"  # the experiment itself is unaffected

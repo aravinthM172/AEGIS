@@ -24,6 +24,7 @@ class ExperimentRequest(BaseModel):
     baseline_s: int = 10
     recovery_s: int = 15
     dry_run: bool = True
+    workload_rps: float = 0.0
     hypothesis: str | None = None
     name: str | None = None
 
@@ -60,6 +61,35 @@ def get_experiment(experiment_id: str):
         return get_engine().get(experiment_id)
     except NotFound:
         raise HTTPException(status_code=404, detail=f"Unknown experiment '{experiment_id}'")
+
+
+@router.get("/{experiment_id}/result")
+def get_result(experiment_id: str):
+    """Measured blast radius for a finished experiment (computed automatically a few seconds after it ends)."""
+    try:
+        exp = get_engine().get(experiment_id)
+    except NotFound:
+        raise HTTPException(status_code=404, detail=f"Unknown experiment '{experiment_id}'")
+    result = exp["result"]
+    if not result or result.get("status") is None:
+        raise HTTPException(status_code=404, detail="no analysis yet (experiment still running, or analysis pending)")
+    return {k: v for k, v in result.items() if k != "workload_samples"}
+
+
+@router.post("/{experiment_id}/analyze")
+def reanalyze(experiment_id: str):
+    """Recompute the analysis from stored telemetry (e.g. after late-arriving events)."""
+    from app.analysis.service import analyze_and_store
+    from app.database import SessionLocal
+
+    try:
+        exp = get_engine().get(experiment_id)
+    except NotFound:
+        raise HTTPException(status_code=404, detail=f"Unknown experiment '{experiment_id}'")
+    if exp["status"] not in ("COMPLETED", "ABORTED", "FAILED"):
+        raise HTTPException(status_code=409, detail=f"experiment is {exp['status']}; analysis needs a finished experiment")
+    result = analyze_and_store(SessionLocal, experiment_id)
+    return {k: v for k, v in result.items() if k != "workload_samples"}
 
 
 @router.post("/{experiment_id}/abort", status_code=202)

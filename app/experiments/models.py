@@ -1,4 +1,4 @@
-from sqlalchemy import JSON, Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 
@@ -35,6 +35,7 @@ class ExperimentRow(Base):
     baseline_s = Column(Integer, nullable=False)
     recovery_s = Column(Integer, nullable=False)
     dry_run = Column(Boolean, nullable=False, default=True)
+    workload_rps = Column(Float, default=0.0)  # traffic generated through the gateway during the experiment
     injector = Column(String(50))
 
     status = Column(String(20), nullable=False, index=True)
@@ -68,6 +69,7 @@ class ExperimentEventRow(Base):
 _ADDED_COLUMNS = (
     ("experiments", "fault_applied_at", "TIMESTAMPTZ"),
     ("experiments", "rollback_started_at", "TIMESTAMPTZ"),
+    ("experiments", "workload_rps", "DOUBLE PRECISION DEFAULT 0"),
 )
 
 
