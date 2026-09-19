@@ -100,6 +100,8 @@ services:
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       FAULT_AGENT_URL: http://fault-agent:8095
       FAULT_AGENT_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
+      FAULTSCOPE_REQUIRE_AUTH_FOR_READS: ${FAULTSCOPE_REQUIRE_AUTH_FOR_READS:-0}
+      FAULTSCOPE_STRICT_SECURITY: ${FAULTSCOPE_STRICT_SECURITY:-0}
     ports:
       - "127.0.0.1:8000:8000"
     networks:

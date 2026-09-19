@@ -280,3 +280,11 @@ Nothing in the README is a claim without a measurement behind it: every result r
 @snippet 44-56 | What was measured
 @snippet 58-64 | Design rules that shaped it
 @snippet 66-73 | Known limits
+
+## FILE docs/commercial-readiness.md | Can this be sold? Name, licences, security and evidence gaps | docs
+### What it is
+An honest first-pass checklist (not legal advice) of what stands between this prototype and a commercial offering: whether the name is safe to use, which third-party licences matter (MinIO is AGPL, Redis and Llama have conditions), the security gaps, and the evidence a buyer would ask for. Section 6 tracks what has been fixed so far.
+
+### Key parts
+@snippet 37-47 | The security gaps table
+@snippet 65-74 | Progress on the security gaps

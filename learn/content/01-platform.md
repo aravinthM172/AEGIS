@@ -14,13 +14,13 @@ The title still says "Aegis" — that's the project's earlier name. FaultScope g
 ### How it works
 1. **Imports** every feature's router. Lines like `from app.ai import models as _ai_models` look unused but they matter: importing a models file *registers its database tables* so `create_all` knows about them.
 2. `app.include_router(...)` adds each feature's URLs to the one API.
-3. `install_telemetry(app)` makes the control plane report its own requests like any other service (see [[app/telemetry_middleware.py]]).
+3. `install_telemetry(app)` makes the control plane report its own requests like any other service (see [[app/telemetry_middleware.py]]). Just before it, `install_read_auth(app)` adds the optional "reads need an API key" check from [[app/security.py]], and at startup `check_startup()` warns about development secrets.
 4. **CORS** lets the dashboard (running on `localhost:3000`) call this API (`localhost:8000`). Without it the browser would block the calls. Only `GET`/`POST` and the `X-API-Key`/`Content-Type` headers are allowed.
 5. On startup a **background thread** runs `_initialize_with_retry`, which creates tables, adds missing columns, loads the service list from `config/topology.json`, rolls back experiments left half-done by a crash, and re-indexes the AI knowledge base.
 
 ### Key parts
-@snippet 73-85 | _initialize: everything that must happen before the system is useful
-@snippet 88-102 | Retry loop: keep trying until the database is reachable
+@snippet 75-87 | _initialize: everything that must happen before the system is useful
+@snippet 90-104 | Retry loop: keep trying until the database is reachable
 
 ### Why the retry loop exists
 Docker Compose can wait for Postgres to be "healthy" (`depends_on`). **Kubernetes cannot** — pods start in any order. The first Kubernetes test found the control plane started before Postgres, gave up once, and stayed with an empty service list forever. This loop (5 s apart, up to 90 attempts) fixed a real bug found by running on Kubernetes.
@@ -49,17 +49,17 @@ Each block under `services:` is one container:
 | `gateway`, `java-service`, `cpp-service` | The demo system that gets broken on purpose |
 | `fault-agent` | The only container with Docker access |
 | `frontend` | The dashboard, port 3000 |
-| `kafka-consumer`, `minio`, `minio-init`, `spark-job` | **Leftovers** from the earlier "Aegis" project; not used by FaultScope |
+| `kafka-consumer` | A **leftover** from the earlier "Aegis" project that only prints incidents; not used by FaultScope. (The unused `minio` and `spark-job` services were removed.) |
 
 ### Key parts
-@snippet 145-168 | gateway: a monitored service, with its labels and settings
-@snippet 214-229 | fault-agent: the one container that mounts the Docker socket
+@snippet 147-170 | gateway: a monitored service, with its labels and settings
+@snippet 216-231 | fault-agent: the one container that mounts the Docker socket
 
 ### Things worth noticing
 - `depends_on … condition: service_healthy` — start order: a service waits until Postgres/Kafka pass their health check.
 - **Labels** `faultscope.injectable: "true"` mark the containers the fault-agent is *allowed* to break. A container without the label is off-limits. `faultscope.fault_port` says where a service's fault hook listens.
 - `${FAULT_AGENT_TOKEN:-dev-token-change-me}` means "use the environment variable if set, otherwise this default". Those defaults are **development-only secrets**; change them before exposing anything.
-- The fault-agent port is published as `127.0.0.1:8095` (your PC only), and the file mounts `/var/run/docker.sock`. Docker socket access is basically root on the host, which is why this is isolated in one small program.
+- **Every published port is bound to `127.0.0.1`** (this PC only), so Postgres, Redis, Kafka and the services are not reachable from the network. The fault-agent also mounts `/var/run/docker.sock`. Docker socket access is basically root on the host, which is why this is isolated in one small program.
 - Environment variables such as `DATABASE_URL` and `KAFKA_BOOTSTRAP_SERVERS` are how each program learns where its neighbours are — by container name (`postgres:5432`), resolved by Docker's DNS.
 
 ??Why is only the fault-agent given the Docker socket? || Because whoever holds it can control every container. Keeping it in one small, heavily-restricted program means the big control plane (and the AI) can never run Docker commands themselves.
@@ -206,3 +206,34 @@ It is strictly read-only: nothing here changes state.
 ### Connects to
 - [[app/prediction/service.py]], [[app/analysis/service.py]], [[app/remediation/routes.py]] — the data it aggregates
 - [[frontend/app/page.tsx]] — the dashboard that calls it
+
+## FILE app/security.py | Optional deployment protections: login for reads, and a check for development secrets | code
+### What it is
+Two protections that are **off by default** (local development stays as before) and can be switched on with environment variables:
+
+| Switch | Effect |
+|---|---|
+| `FAULTSCOPE_REQUIRE_AUTH_FOR_READS=1` | Every `GET` under `/api/` needs a valid `X-API-Key` (any role). Health probes stay open. |
+| `FAULTSCOPE_STRICT_SECURITY=1` | The control plane **refuses to start** outside `FAULTSCOPE_ENV=local` while a development secret is in use. |
+
+### How it works
+- `insecure_defaults` lists development secrets currently in use (`dev-operator-key`, `dev-admin-key`, `dev-token-change-me`). It reports **which** dev key, never a custom one.
+- `check_startup` is called when the app starts. In local mode it stays quiet; elsewhere it logs a warning for each problem, or raises in strict mode.
+- `install_read_auth` adds a middleware. The flag is read on every request, so it can be tested without a rebuild. If reads are required but **no keys are configured**, it answers **503** (disabled) instead of leaving reads open — the same secure-by-default rule as [[app/remediation/auth.py]].
+- It is registered *before* the telemetry middleware, so rejected requests still show up in the telemetry.
+- Checked live on this stack: without a key `/api/overview` returns 401, with a key 200, and `/api/health` stays 200.
+
+### Key parts
+@snippet 25-34 | Detect development secrets
+@snippet 37-48 | Warn, or refuse to start in strict mode
+@snippet 51-66 | The read-auth middleware
+
+??Why does read-auth answer 503, not 200, when no keys are configured? || Requiring authentication with no way to authenticate is a misconfiguration. Failing closed (503) is safer than silently serving data to everyone.
+
+## FILE tests/test_security.py | Tests for the optional protections | test
+### What it is
+6 tests: reads are open by default; with the flag on they need a key while health and non-API paths stay open; a CORS preflight is not blocked; enabling it with no keys configured is disabled, not open; development secrets are detected without echoing custom keys; local mode is quiet and strict mode refuses elsewhere.
+
+### Key parts
+@snippet 37-43 | Reads need a key when enabled
+@snippet 66-72 | Local quiet, strict refuses

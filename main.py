@@ -27,6 +27,7 @@ from app.database import Base, SessionLocal, engine
 from app.topology_graph import TopologyError
 from app.topology_registry import seed_registry
 from app.topology_routes import router as topology_router
+from app.security import check_startup, install_read_auth
 from app.telemetry_middleware import install as install_telemetry
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ app.include_router(twin_router)
 app.include_router(remediation_router)
 
 
+install_read_auth(app)   # optional (FAULTSCOPE_REQUIRE_AUTH_FOR_READS=1); registered before telemetry so 401s are recorded
 install_telemetry(app)
 
 # The Control Center (browser) calls this API from another origin. Reads and the API-key header only.
@@ -104,6 +106,7 @@ def _initialize_with_retry(attempts: int = 90, delay_s: float = 5.0) -> None:
 
 @app.on_event("startup")
 def init_db():
+    check_startup()  # warns about development secrets outside local mode; FAULTSCOPE_STRICT_SECURITY=1 refuses to start
     # Off the startup path so the API (and its health probe) is available immediately.
     threading.Thread(target=_initialize_with_retry, name="init", daemon=True).start()
 

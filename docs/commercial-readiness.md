@@ -61,3 +61,14 @@ has no LICENSE file yet, which means "all rights reserved" by default).
 3. Record a 3-minute demo of the dashboard running an experiment, plus a written case study (the Job Tracker results
    in `targets/job-tracker/README.md` are a good start).
 4. Talk to potential users before building features.
+
+## 6. Progress on the security gaps (2026-09-19)
+
+| Gap | Status |
+|---|---|
+| Infrastructure ports on all interfaces | **Done**: every published port is bound to `127.0.0.1` (`docker-compose.yml`) |
+| MinIO (AGPL) and Spark leftovers | **Done**: removed from `docker-compose.yml` (the `legacy/`, `spark-job/`, `llm-service/` directories are still in the repository) |
+| Read endpoints have no login | **Available, off by default**: `FAULTSCOPE_REQUIRE_AUTH_FOR_READS=1` (`app/security.py`, tested live) |
+| Dev secrets as defaults | **Partly**: startup warns outside local mode; `FAULTSCOPE_STRICT_SECURITY=1` refuses to start. The defaults themselves are still in `docker-compose.yml`, `k8s/*.yaml` and `.env.example` |
+| Kafka/Redis without authentication, TLS, per-user identity, tenant separation | Open |
+| Kubernetes fault injector | Open |

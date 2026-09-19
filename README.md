@@ -70,4 +70,4 @@ which is what the containers use.
 - Early warning is unreliable in the first ~8 s of an incident (silence needs a full window), and Kafka outages are misattributed.
 - Kubernetes: no fault injector or executor; `ROLLBACK_DEPLOYMENT` and `ENABLE_FALLBACK` are `unsupported` in the policy engine.
 - No cloud deployment. Auth is API-key roles on state-changing endpoints only; reads are open. Dev keys are in `docker-compose.yml`.
-- Legacy `llm-service/`, `legacy/` and the compose services `minio`, `spark-job` are unused leftovers from the earlier "Aegis" project.
+- Legacy `llm-service/`, `legacy/` and the `kafka-consumer` compose service are unused leftovers from the earlier "Aegis" project.
