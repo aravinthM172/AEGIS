@@ -11,6 +11,7 @@ from app.ai.routes import router as ai_router
 from app.analysis import models as _analysis_models  # noqa: F401  (registers tables)
 from app.analysis.routes import router as analysis_router
 from app.overview import router as overview_router
+from app.twin.routes import router as twin_router
 from app.experiments import campaign as _campaign  # noqa: F401  (registers tables)
 from app.experiments import models as _experiment_models  # noqa: F401  (registers tables)
 from app.experiments.campaign import get_campaign_runner
@@ -53,6 +54,7 @@ app.include_router(analysis_router)
 app.include_router(ai_router)
 app.include_router(prediction_router)
 app.include_router(overview_router)
+app.include_router(twin_router)
 app.include_router(remediation_router)
 
 
