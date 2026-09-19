@@ -3,7 +3,9 @@
 #include <cctype>
 #include <csignal>
 #include <chrono>
+#include <cstdlib>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -50,6 +52,43 @@ std::string headerValue(const std::string& request, std::string name) {
     const auto first = value.find_first_not_of(" \t");
     const auto last = value.find_last_not_of(" \t");
     return first == std::string::npos ? "" : value.substr(first, last - first + 1);
+}
+
+// Read one HTTP request: headers, then Content-Length bytes of body. A client may send them in
+// separate packets, so a single recv() is not enough. The receive timeout keeps idle or
+// half-open connections from blocking this single-threaded server.
+std::string readRequest(SOCKET client) {
+#ifdef _WIN32
+    DWORD timeoutMs = 2000;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeoutMs), sizeof(timeoutMs));
+#else
+    timeval tv{};
+    tv.tv_sec = 2;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+#endif
+    constexpr std::size_t kMaxRequest = 16384;
+    std::string data;
+    char chunk[4096];
+    while (data.size() < kMaxRequest) {
+        const int n = static_cast<int>(recv(client, chunk, sizeof(chunk), 0));
+        if (n <= 0) {
+            break;
+        }
+        data.append(chunk, static_cast<std::size_t>(n));
+        const auto headerEnd = data.find("\r\n\r\n");
+        if (headerEnd == std::string::npos) {
+            continue;
+        }
+        std::size_t want = 0;
+        const std::string length = headerValue(data, "Content-Length");
+        if (!length.empty() && std::all_of(length.begin(), length.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+            want = std::min<std::size_t>(std::stoul(length), kMaxRequest);
+        }
+        if (data.size() >= headerEnd + 4 + want) {
+            break;
+        }
+    }
+    return data;
 }
 
 std::string requestMethod(const std::string& request) {
@@ -116,6 +155,53 @@ constexpr std::uint64_t kDefaultComputeN = 100000;
 std::atomic<std::uint64_t> requestCount{0};
 
 std::atomic<bool> stopRequested{false};
+
+// ---- HTTP-error fault hook (driven by the fault agent; self-expiring) ---------------------------
+std::atomic<double> hookRate{0.0};
+std::atomic<int> hookStatus{500};
+std::atomic<long long> hookExpiryMs{0};  // steady-clock milliseconds
+
+long long steadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+bool hookActive() {
+    return hookRate.load() > 0.0 && steadyMs() < hookExpiryMs.load();
+}
+
+// Status to inject for this request, or 0 to let it through.
+int hookShouldFail() {
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    if (!hookActive()) {
+        return 0;
+    }
+    return std::uniform_real_distribution<double>(0.0, 1.0)(rng) < hookRate.load() ? hookStatus.load() : 0;
+}
+
+std::string hookStateJson() {
+    const bool active = hookActive();
+    char rate[32];
+    std::snprintf(rate, sizeof(rate), "%.3f", active ? hookRate.load() : 0.0);
+    const long long remaining = active ? (hookExpiryMs.load() - steadyMs()) / 1000 : 0;
+    return std::string("{\"active\":") + (active ? "true" : "false") + ",\"rate\":" + rate +
+           ",\"status\":" + std::to_string(hookStatus.load()) + ",\"expires_in_s\":" + std::to_string(remaining) + "}";
+}
+
+// Numeric value of `"key": <number>` in a flat JSON body; false if absent.
+bool jsonNumber(const std::string& body, const std::string& key, double& out) {
+    const auto pos = body.find("\"" + key + "\"");
+    if (pos == std::string::npos) {
+        return false;
+    }
+    const auto colon = body.find(':', pos);
+    if (colon == std::string::npos) {
+        return false;
+    }
+    char* end = nullptr;
+    out = std::strtod(body.c_str() + colon + 1, &end);
+    return end != body.c_str() + colon + 1;
+}
 
 extern "C" void onStopSignal(int) {
     stopRequested.store(true);
@@ -202,30 +288,69 @@ int main() {
             continue;  // EINTR on a stop signal: the loop condition decides
         }
 
-        char buffer[4096] = {};
-
-        recv(
-            clientSocket,
-            buffer,
-            sizeof(buffer) - 1,
-            0
-        );
-
+        std::string request = readRequest(clientSocket);
         const auto startedAt = std::chrono::steady_clock::now();
-        std::string request(buffer);
         std::string body;
         std::string route;
         int status = 200;
         const char* reason = "OK";
         requestCount.fetch_add(1);
 
-        if (request.find("GET /compute") != std::string::npos) {
+        const bool hookRoute = request.rfind("POST /_faults/http-error", 0) == 0 ||
+                               request.rfind("DELETE /_faults/http-error", 0) == 0 ||
+                               request.rfind("GET /_faults/http-error", 0) == 0;
+        int injected = 0;
+
+        if (hookRoute) {
+
+            route = "/_faults/http-error";
+            const char* configured = std::getenv("FAULT_HOOK_TOKEN");
+            const std::string token = configured ? configured : "";
+            if (token.empty()) {
+                status = 503;
+                reason = "Service Unavailable";
+                body = "{\"error\":\"fault hook disabled: FAULT_HOOK_TOKEN not set\"}";
+            } else if (headerValue(request, "X-Fault-Token") != token) {
+                status = 401;
+                reason = "Unauthorized";
+                body = "{\"error\":\"invalid fault hook token\"}";
+            } else if (request.rfind("DELETE", 0) == 0) {
+                hookRate.store(0.0);
+                hookExpiryMs.store(0);
+                body = hookStateJson();
+            } else if (request.rfind("POST", 0) == 0) {
+                const auto bodyStart = request.find("\r\n\r\n");
+                const std::string payload = bodyStart == std::string::npos ? "" : request.substr(bodyStart + 4);
+                double rate = 0, statusCode = 500, ttl = 60;
+                jsonNumber(payload, "status", statusCode);
+                jsonNumber(payload, "ttl_s", ttl);
+                if (!jsonNumber(payload, "rate", rate) || rate <= 0.0 || rate > 1.0 ||
+                    statusCode < 500 || statusCode > 599 || ttl < 1 || ttl > 900) {
+                    status = 422;
+                    reason = "Unprocessable Entity";
+                    body = "{\"error\":\"rate in (0,1], status 500-599, ttl_s 1-900\"}";
+                } else {
+                    hookStatus.store(static_cast<int>(statusCode));
+                    hookExpiryMs.store(steadyMs() + static_cast<long long>(ttl) * 1000);
+                    hookRate.store(rate);
+                    body = hookStateJson();
+                }
+            } else {
+                body = hookStateJson();
+            }
+
+        } else if (request.find("GET /compute") != std::string::npos) {
 
             route = "/compute";
             std::uint64_t n = kDefaultComputeN;
             const QueryResult parsed = queryUint(request, "n", n);
+            injected = hookShouldFail();
 
-            if (parsed == QueryResult::Invalid || n < 1 || n > kMaxComputeN) {
+            if (injected != 0) {
+                status = injected;
+                reason = "Injected Fault";
+                body = "{\"service\":\"cpp-service\",\"error\":\"injected_fault\"}";
+            } else if (parsed == QueryResult::Invalid || n < 1 || n > kMaxComputeN) {
                 status = 400;
                 reason = "Bad Request";
                 body =
@@ -312,6 +437,9 @@ int main() {
         event.latency_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - startedAt).count();
         event.status_code = status;
+        if (injected != 0) {
+            event.error_type = "injected_fault";
+        }
         event.method = requestMethod(request);
         event.path = route;
         emitter.emit(event);

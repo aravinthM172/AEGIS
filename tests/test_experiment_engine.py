@@ -177,7 +177,7 @@ def test_invalid_request_creates_nothing(factory):
         create(engine, target="control-plane")
     assert any("protected" in e for e in info.value.errors)
     with pytest.raises(ValidationFailed):
-        create(engine, fault_type="cpu_stress", parameters={"cpu_percent": 50}, dry_run=False)
+        create(engine, fault_type="meteor", dry_run=False)
     assert engine.list_experiments() == []
 
 
@@ -290,3 +290,15 @@ def test_failing_analysis_hook_is_recorded_not_swallowed(factory):
     failed = next(e for e in done["events"] if e["event_type"] == "analysis_failed")
     assert "telemetry unavailable" in failed["detail"]["error"]
     assert done["status"] == "COMPLETED"  # the experiment itself is unaffected
+
+
+def test_workload_intensity_is_validated_and_passed_to_the_runner(factory):
+    engine, _ = engine_with_workload(factory)
+    with pytest.raises(ValidationFailed, match="workload_n"):
+        create(engine, workload_rps=2, workload_n=0)
+    with pytest.raises(ValidationFailed, match="workload_n"):
+        create(engine, workload_rps=2, workload_n=10_000_000)
+    exp = create(engine, workload_rps=2, workload_n=2_000_000)
+    assert exp["workload_n"] == 2_000_000
+    wait_for(engine, exp["id"], lambda e: e["status"] == "COMPLETED")
+    assert FakeWorkload.instances[0].exp["workload_n"] == 2_000_000

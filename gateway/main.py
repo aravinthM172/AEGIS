@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from app.telemetry import SERVICE_NAME, TelemetryEvent
+from app.fault_hook import install as install_fault_hook
 from app.telemetry_middleware import emit_async, install
 
 JAVA_SERVICE_URL = os.getenv("JAVA_SERVICE_URL", "http://java-service:8081")
@@ -36,6 +37,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="FaultScope Gateway", version="1.0.0", lifespan=lifespan)
+install_fault_hook(app)  # registered first => inner; telemetry stays outermost and records injected errors
 install(app)
 
 

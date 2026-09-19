@@ -33,7 +33,8 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("FAULT_AGENT_TOKEN must be set; refusing to start unauthenticated")
     import docker  # imported here so the core stays importable without the SDK
 
-    manager = FaultManager(docker.from_env(), STATE_PATH, NETEM_IMAGE)
+    manager = FaultManager(docker.from_env(), STATE_PATH, NETEM_IMAGE,
+                           hook_token=os.getenv("FAULT_HOOK_TOKEN", TOKEN))
     result = manager.revert_all_on_startup()
     if result["reverted"] or result["failed"]:
         logger.warning("startup revert: %s", result)

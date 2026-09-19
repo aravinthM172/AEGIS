@@ -183,7 +183,12 @@ def analyze(*, experiment: dict, http_events: dict[str, list[dict]], call_events
             warnings.append(f"{name}: no telemetry during the fault window (it may be down, its telemetry "
                             "path impaired, or it received no traffic)")
 
-    affected = sorted((n for n, s in services.items() if s["status"] == "affected" and n not in client_services),
+    for name, entry in services.items():
+        if name == target:
+            entry["role"] = "target"  # the injected fault's own effect, not propagation
+
+    affected = sorted((n for n, s in services.items()
+                       if s["status"] == "affected" and n not in client_services and n != target),
                       key=lambda n: (hops.get(n, 99), n))
     direct = [n for n in affected if hops.get(n) == 1]
     indirect = [n for n in affected if hops.get(n, 0) > 1]
@@ -202,7 +207,7 @@ def analyze(*, experiment: dict, http_events: dict[str, list[dict]], call_events
     }
 
     # propagation: graph edges (caller -> callee) between the target/affected set, with evidence
-    in_play = {target, *affected}
+    in_play = {target, *affected}  # the target always heads the propagation chain
     propagation_edges = []
     for src, dst in combined:
         if src in affected and dst in in_play:
@@ -249,6 +254,12 @@ def analyze(*, experiment: dict, http_events: dict[str, list[dict]], call_events
         entry_impact = {"service": entry_service, "status": s["status"], "impact_pct": s["impact_pct"],
                         "degraded_requests": s["fault"]["degraded"], "total_requests": s["fault"]["requests"]}
 
+    target_impact = None
+    if target in services:
+        t_entry = services[target]
+        target_impact = {"service": target, "status": t_entry["status"], "impact_pct": t_entry["impact_pct"],
+                         "error_pct": t_entry["fault"]["error_pct"], "requests": t_entry["fault"]["requests"]}
+
     return {
         "version": 1,
         "status": "analyzed",
@@ -261,6 +272,7 @@ def analyze(*, experiment: dict, http_events: dict[str, list[dict]], call_events
         "affected_services": affected,
         "direct": direct,
         "indirect": indirect,
+        "target_impact": target_impact,
         "affected_requests": sum(services[n]["fault"]["degraded"] for n in affected),
         "entry_impact": entry_impact,
         "structural": structural,

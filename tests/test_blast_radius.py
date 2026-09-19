@@ -154,3 +154,16 @@ def test_client_sees_no_impact_even_when_service_telemetry_went_blind():
     assert r["services"]["gateway"]["status"] == "insufficient_data"
     assert r["entry_impact"]["status"] == "unaffected" and r["entry_impact"]["degraded_requests"] == 0
     assert any("gateway: no telemetry during the fault window" in w for w in r["quality"]["warnings"])
+
+
+def test_the_target_itself_is_labelled_target_not_unexplained():
+    # http_error on java: java has telemetry and is degraded, gateway (its caller) too
+    java = stream(0, 12) + stream(12, 27, status=503) + stream(27, 45)
+    gateway = stream(0, 12) + stream(12, 27, status=502) + stream(27, 45)
+    r = analyze(experiment(target="java", fault="http_error"), {"java": java, "gateway": gateway}, [], EDGES,
+                entry_service="gateway")
+    assert r["services"]["java"]["role"] == "target"
+    assert r["target_impact"]["service"] == "java" and r["target_impact"]["impact_pct"] == 100.0
+    assert r["affected_services"] == ["gateway"] and r["direct"] == ["gateway"]
+    assert r["structural"]["affected_but_not_predicted"] == []
+    assert r["propagation"]["paths"] == ["java -> gateway"]

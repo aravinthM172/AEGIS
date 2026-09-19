@@ -60,17 +60,21 @@ def test_timing_limits():
     assert check(baseline_s=0)[0] == []
 
 
-def test_real_run_allowed_only_for_faults_with_a_real_injector():
-    implemented = {n for n, f in FAULTS.items() if f.implemented}
-    assert implemented == {"stop_container", "pause_container", "restart_container", "latency"}
+def test_every_catalog_fault_now_has_a_real_injector_with_valid_defaults():
+    assert all(f.implemented for f in FAULTS.values())
     assert check(fault_type="stop_container", dry_run=False)[0] == []
     assert check(fault_type="latency", parameters={"latency_ms": 500}, dry_run=False)[0] == []
-    params = {"cpu_stress": {"cpu_percent": 50}, "memory_stress": {"memory_mb": 64},
-              "http_error": {"error_rate": 0.5}}
-    for name, p in params.items():
-        errors, _ = check(fault_type=name, parameters=p, dry_run=False)
-        assert any("no real injector" in e for e in errors), name
-        assert check(fault_type=name, parameters=p, dry_run=True)[0] == []
+    errors, params = check(fault_type="cpu_stress", dry_run=False)
+    assert errors == [] and params == {"cpu_limit_cores": 1.0, "workers": 1}
+    assert check(fault_type="memory_stress", parameters={"memory_mb": 128}, dry_run=False)[0] == []
+    assert check(fault_type="http_error", parameters={"error_rate": 0.3}, dry_run=False)[0] == []
+
+
+def test_stress_parameters_are_bounded():
+    assert any("between" in e for e in check(fault_type="cpu_stress", parameters={"cpu_limit_cores": 9})[0])
+    assert any("between" in e for e in check(fault_type="cpu_stress", parameters={"workers": 99})[0])
+    assert any("between" in e for e in check(fault_type="memory_stress", parameters={"memory_mb": 4096})[0])
+    assert any("is required" in e for e in check(fault_type="memory_stress")[0])
 
 
 def test_catalog_lists_every_fault_with_implemented_flag():

@@ -77,6 +77,7 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
         "recovery_s": exp.recovery_s,
         "dry_run": exp.dry_run,
         "workload_rps": exp.workload_rps or 0.0,
+        "workload_n": exp.workload_n or 100000,
         "injector": exp.injector,
         "status": exp.status,
         "phase": exp.phase,
@@ -102,7 +103,7 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
 
 
 def default_workload_factory(exp: dict) -> WorkloadRunner:
-    return WorkloadRunner(rps=exp["workload_rps"], trace_prefix=f"exp-{exp['id'][:8]}")
+    return WorkloadRunner(rps=exp["workload_rps"], n=exp["workload_n"], trace_prefix=f"exp-{exp['id'][:8]}")
 
 
 class ExperimentEngine:
@@ -125,7 +126,8 @@ class ExperimentEngine:
 
     def create(self, *, target: str, fault_type: str, duration_s: int, parameters: dict | None = None,
                baseline_s: int = 10, recovery_s: int = 15, dry_run: bool = True,
-               hypothesis: str | None = None, name: str | None = None, workload_rps: float = 0.0) -> dict:
+               hypothesis: str | None = None, name: str | None = None, workload_rps: float = 0.0,
+               workload_n: int = 100000) -> dict:
         """Validate, persist and start an experiment. Raises ValidationFailed / ActiveExperimentExists."""
         with self.session_factory() as db:
             services = {
@@ -139,6 +141,8 @@ class ExperimentEngine:
             )
             if not 0 <= workload_rps <= 25:
                 errors.append("workload_rps must be between 0 and 25")
+            if isinstance(workload_n, bool) or not isinstance(workload_n, int) or not 1 <= workload_n <= 5_000_000:
+                errors.append("workload_n must be an integer between 1 and 5000000")
             if not errors and not dry_run:
                 errors = self.real_run_preflight()
             if errors:
@@ -150,7 +154,7 @@ class ExperimentEngine:
                 hypothesis=hypothesis,
                 target=target, fault_type=fault_type, parameters=params,
                 duration_s=duration_s, baseline_s=baseline_s, recovery_s=recovery_s,
-                dry_run=dry_run, workload_rps=workload_rps, injector="dry_run" if dry_run else "docker",
+                dry_run=dry_run, workload_rps=workload_rps, workload_n=workload_n, injector="dry_run" if dry_run else "docker",
                 status="PENDING", abort_requested=False, active_slot=True,
             )
             try:
@@ -363,10 +367,16 @@ class ExperimentEngine:
             db.commit()
 
     def _finish(self, exp_id: str, status: str, error: str | None) -> None:
-        self._update(exp_id, status=status, phase=None, active_slot=None,
-                     finished_at=_now(), error=error)
-        self._event(exp_id, {"COMPLETED": "completed", "ABORTED": "aborted"}.get(status, "failed"),
-                    {"error": error} if error else {})
+        # status change and its final event commit together: an observer that sees the final
+        # status must also see the event that explains it
+        with self.session_factory() as db:
+            db.query(ExperimentRow).filter_by(id=exp_id).update(
+                {"status": status, "phase": None, "active_slot": None, "finished_at": _now(), "error": error})
+            db.add(ExperimentEventRow(
+                experiment_id=exp_id, timestamp=_now(),
+                event_type={"COMPLETED": "completed", "ABORTED": "aborted"}.get(status, "failed"),
+                detail={"error": error} if error else {}))
+            db.commit()
         self._schedule_analysis(exp_id)
 
     def _schedule_analysis(self, exp_id: str) -> None:

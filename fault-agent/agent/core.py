@@ -47,8 +47,12 @@ class FaultManager:
     def __init__(self, client, state_path: str, netem_image: str,
                  timer_factory: Callable = threading.Timer,
                  wait_running_s: float = 60.0, poll_s: float = 0.5,
-                 expire_retry_s: float = 10.0, expire_max_retries: int = 5):
+                 expire_retry_s: float = 10.0, expire_max_retries: int = 5,
+                 http=None, hook_token: str = "", settle_s: float = 2.0):
         self.client = client
+        self._http = http
+        self.hook_token = hook_token
+        self.settle_s = settle_s
         self.state_path = state_path
         self.netem_image = netem_image
         self._timer_factory = timer_factory
@@ -65,6 +69,9 @@ class FaultManager:
             "pause_container": (self._apply_pause, self._undo_pause),
             "restart_container": (self._apply_restart, self._undo_restart),
             "latency": (self._apply_latency, self._undo_latency),
+            "cpu_stress": (self._apply_cpu, self._undo_cpu),
+            "memory_stress": (self._apply_memory, self._undo_memory),
+            "http_error": (self._apply_http_error, self._undo_http_error),
         }
 
     # ---- public ---------------------------------------------------------------
@@ -93,7 +100,7 @@ class FaultManager:
 
         apply_fn, undo_fn = self._handlers[fault_type]
         try:
-            details = apply_fn(c, params)
+            details = apply_fn(c, {**params, "_ttl_s": ttl_s})
         except Exception:
             logger.exception("apply failed for %s; undoing partial effects", experiment_id)
             try:
@@ -295,3 +302,149 @@ class FaultManager:
         if "netem" in shown:
             raise FaultError(f"netem still active after undo: {shown.strip()}")
         return {"action": "tc netem del", "qdisc": shown.strip()}
+
+    # ---- stress helpers -------------------------------------------------------------
+
+    # Marker carried in the argv of every stress process we start ($0 of `sh -c`). The cleanup
+    # script spells it as two adjacent quoted halves so its own command line never matches.
+    _MARK = "fs_stress_marker"
+
+    _KILL_TREE = (
+        "children() { for d in /proc/[0-9]*; do "
+        "pp=$(sed -n 's/^PPid:[[:space:]]*//p' \"$d/status\" 2>/dev/null); "
+        "[ \"$pp\" = \"$1\" ] && echo \"${d#/proc/}\"; done; }; "
+        "kill_tree() { for c in $(children \"$1\"); do kill_tree \"$c\"; done; kill \"$1\" 2>/dev/null; }; "
+        "for d in /proc/[0-9]*; do grep -q \"fs_stress\"\"_marker\" \"$d/cmdline\" 2>/dev/null "
+        "&& kill_tree \"${d#/proc/}\"; done; true"
+    )
+
+    def _exec_detached(self, c, script: str) -> None:
+        c.exec_run(["sh", "-c", script, self._MARK], detach=True)
+
+    def _kill_stress(self, c) -> None:
+        c.exec_run(["sh", "-c", self._KILL_TREE])
+
+    @staticmethod
+    def _cpu_sample(c) -> tuple[float, float, int]:
+        s = c.stats(stream=False)
+        cpu = s["cpu_stats"]
+        return (cpu["cpu_usage"]["total_usage"], cpu.get("system_cpu_usage", 0),
+                cpu.get("online_cpus") or len(cpu["cpu_usage"].get("percpu_usage", [])) or 1)
+
+    def _cpu_cores_used(self, c, window_s: float) -> float:
+        a_total, a_sys, _ = self._cpu_sample(c)
+        time.sleep(window_s)
+        b_total, b_sys, online = self._cpu_sample(c)
+        sys_delta = b_sys - a_sys
+        return 0.0 if sys_delta <= 0 else (b_total - a_total) / sys_delta * online
+
+    @staticmethod
+    def _mem_working_set_mb(c) -> float:
+        m = c.stats(stream=False)["memory_stats"]
+        cache = (m.get("stats") or {}).get("inactive_file", (m.get("stats") or {}).get("total_inactive_file", 0))
+        return (m.get("usage", 0) - cache) / (1024 * 1024)
+
+    # ---- cpu_stress -----------------------------------------------------------------
+
+    def _apply_cpu(self, c, params):
+        c.reload()
+        if c.status != "running":
+            raise FaultError(f"cannot stress cpu: container '{c.name}' is {c.status}")
+        limit = float(params.get("cpu_limit_cores", 1.0))
+        workers = int(params.get("workers", 1))
+        host = c.attrs.get("HostConfig", {})
+        original = {"cpu_quota": host.get("CpuQuota", 0), "cpu_period": host.get("CpuPeriod", 0) or 100000}
+        # cap the target to `limit` cores so the stress cannot spill onto other containers
+        c.update(cpu_period=100000, cpu_quota=int(limit * 100000))
+        for _ in range(workers):
+            self._exec_detached(c, "while :; do :; done")
+        details = {"action": "cpu quota + busy workers", "cpu_limit_cores": limit, "workers": workers,
+                   "original_cpu_quota": original["cpu_quota"]}
+        if workers:
+            time.sleep(self.settle_s)
+            used = self._cpu_cores_used(c, 2.0)
+            details["measured_cores_used"] = round(used, 2)
+            if used < 0.4 * min(limit, workers):
+                raise FaultError(f"cpu stress ineffective: {used:.2f} cores used "
+                                 f"(expected about {min(limit, workers):.2f})")
+        return details
+
+    def _undo_cpu(self, c, params):
+        self._kill_stress(c)
+        # `docker update --cpu-quota 0` means "unchanged"; -1 removes the limit. Managed containers start uncapped.
+        c.update(cpu_period=100000, cpu_quota=-1)
+        c.reload()
+        quota = c.attrs.get("HostConfig", {}).get("CpuQuota", 0)
+        if quota > 0:
+            raise FaultError(f"cpu quota still {quota} after rollback")
+        return {"action": "stress processes killed, cpu quota removed", "cpu_quota": quota}
+
+    # ---- memory_stress --------------------------------------------------------------
+
+    def _apply_memory(self, c, params):
+        c.reload()
+        if c.status != "running":
+            raise FaultError(f"cannot stress memory: container '{c.name}' is {c.status}")
+        mb = int(params["memory_mb"])
+        before = self._mem_working_set_mb(c)
+        hold = int(params.get("_ttl_s", 300)) + 5
+        # Two techniques, chosen up front by a capability probe (a `||` fallback could race the cleanup and
+        # leave orphans): awk holds N distinct 1MB strings and sleeps -- works on busybox/gawk but mawk (debian,
+        # ubuntu) cannot build a 1MB sprintf string; there tail keeps one newline-free line (all of /dev/zero)
+        # while sleep holds the pipe open.
+        probe = "awk 'BEGIN { s = sprintf(\"%1048576s\", \"\"); exit (length(s) == 1048576 ? 0 : 1) }' >/dev/null 2>&1"
+        self._exec_detached(
+            c,
+            f"if {probe}; then "
+            f"awk 'BEGIN {{ s = sprintf(\"%1048576s\", \"\"); for (i = 0; i < {mb}; i++) a[i] = i s; "
+            f"system(\"sleep {hold}\") }}'; "
+            f"else (head -c {mb}M /dev/zero; sleep {hold}) | tail -n 1 > /dev/null; fi")
+        time.sleep(self.settle_s)
+        after = self._mem_working_set_mb(c)
+        grew = after - before
+        if grew < 0.6 * mb:
+            raise FaultError(f"memory stress ineffective: working set grew {grew:.0f}MB of the requested {mb}MB")
+        return {"action": "hold memory in target", "requested_mb": mb, "measured_growth_mb": round(grew)}
+
+    def _undo_memory(self, c, params):
+        self._kill_stress(c)
+        return {"action": "stress processes killed"}
+
+    # ---- http_error (service-side fault hook) ------------------------------------------
+
+    def _hook_url(self, c) -> str:
+        port = (c.labels or {}).get("faultscope.fault_port")
+        if not port:
+            raise FaultError(f"container '{c.name}' has no faultscope.fault_port label: it has no http fault hook")
+        return f"http://{c.name}:{port}/_faults/http-error"
+
+    def _http_client(self):
+        if self._http is None:
+            import httpx
+            self._http = httpx.Client(timeout=5.0)
+        return self._http
+
+    def _apply_http_error(self, c, params):
+        c.reload()
+        if c.status != "running":
+            raise FaultError(f"cannot inject http errors: container '{c.name}' is {c.status}")
+        body = {"rate": float(params["error_rate"]), "status": int(params.get("status_code", 500)),
+                "ttl_s": int(params.get("_ttl_s", 60))}
+        response = self._http_client().post(self._hook_url(c), json=body, headers={"X-Fault-Token": self.hook_token})
+        if response.status_code != 200:
+            raise FaultError(f"fault hook refused ({response.status_code}): {response.text[:200]}")
+        state = response.json()
+        if not state.get("active"):
+            raise FaultError(f"fault hook did not activate: {state}")
+        return {"action": "service fault hook", "error_rate": body["rate"], "status_code": body["status"], "hook": state}
+
+    def _undo_http_error(self, c, params):
+        c.reload()
+        if c.status != "running":
+            return {"action": "service fault hook", "note": f"container is {c.status}; hook state vanished with it"}
+        response = self._http_client().delete(self._hook_url(c), headers={"X-Fault-Token": self.hook_token})
+        if response.status_code != 200:
+            raise FaultError(f"fault hook rollback failed ({response.status_code}): {response.text[:200]}")
+        if response.json().get("active"):
+            raise FaultError("fault hook still active after rollback")
+        return {"action": "service fault hook cleared"}

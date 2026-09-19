@@ -60,20 +60,26 @@ FAULTS: dict[str, FaultSpec] = {f.fault_type: f for f in (
         implemented=True),
     FaultSpec(
         "http_error",
-        "Make the target's HTTP endpoints fail a fraction of requests (needs a fault hook in the service).",
+        "Make the target service fail a fraction of its HTTP requests with a 5xx (service-side fault hook, "
+        "self-expiring).",
         frozenset({"service"}),
         (ParamSpec("error_rate", "float", 0.01, 1.0),
-         ParamSpec("status_code", "int", 500, 599, required=False, default=500))),
+         ParamSpec("status_code", "int", 500, 599, required=False, default=500)),
+        implemented=True),
     FaultSpec(
         "cpu_stress",
-        "Consume CPU inside the target's container.",
+        "Cap the target's CPU quota and run busy workers inside it, so its own work is starved without "
+        "affecting other containers.",
         ALL_KINDS,
-        (ParamSpec("cpu_percent", "int", 10, 100, unit="%"),)),
+        (ParamSpec("cpu_limit_cores", "float", 0.1, 4.0, required=False, default=1.0, unit="cores"),
+         ParamSpec("workers", "int", 0, 8, required=False, default=1)),
+        implemented=True),
     FaultSpec(
         "memory_stress",
-        "Consume memory inside the target's container.",
+        "Hold memory inside the target's container (verified by measuring its working set).",
         ALL_KINDS,
-        (ParamSpec("memory_mb", "int", 16, 1024, unit="MB"),)),
+        (ParamSpec("memory_mb", "int", 16, 1024, unit="MB"),),
+        implemented=True),
 )}
 
 

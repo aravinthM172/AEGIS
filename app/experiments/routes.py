@@ -25,6 +25,7 @@ class ExperimentRequest(BaseModel):
     recovery_s: int = 15
     dry_run: bool = True
     workload_rps: float = 0.0
+    workload_n: int = 100000
     hypothesis: str | None = None
     name: str | None = None
 

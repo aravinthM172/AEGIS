@@ -145,6 +145,7 @@ services:
     container_name: aegis-gateway
     labels:
       faultscope.injectable: "true"
+      faultscope.fault_port: "8090"
     command: uvicorn gateway.main:app --host 0.0.0.0 --port 8090
     depends_on:
       kafka:
@@ -155,6 +156,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       TELEMETRY_TOPIC: telemetry
       SERVICE_NAME: gateway
+      FAULT_HOOK_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
       JAVA_SERVICE_URL: http://java-service:8081
     ports:
       - "8090:8090"
@@ -167,6 +169,7 @@ services:
     container_name: aegis-java-service
     labels:
       faultscope.injectable: "true"
+      faultscope.fault_port: "8081"
     depends_on:
       kafka:
         condition: service_healthy
@@ -178,6 +181,7 @@ services:
       SPRING_DATASOURCE_USERNAME: aegis
       SPRING_DATASOURCE_PASSWORD: aegis
       CPP_SERVICE_URL: http://cpp-service:8082
+      FAULT_HOOK_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
     ports:
       - "8081:8081"
     networks:
@@ -189,6 +193,7 @@ services:
     container_name: aegis-cpp-service
     labels:
       faultscope.injectable: "true"
+      faultscope.fault_port: "8082"
     depends_on:
       kafka:
         condition: service_healthy
@@ -196,6 +201,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       TELEMETRY_TOPIC: telemetry
       SERVICE_NAME: cpp-service
+      FAULT_HOOK_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
     ports:
       - "8082:8082"
     networks:
@@ -209,6 +215,7 @@ services:
       FAULT_AGENT_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
       FAULT_AGENT_IMAGE: faultscope/fault-agent:local
       FAULT_AGENT_STATE: /data/state.json
+      FAULT_HOOK_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - fault_agent_data:/data

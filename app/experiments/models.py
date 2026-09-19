@@ -35,6 +35,7 @@ class ExperimentRow(Base):
     baseline_s = Column(Integer, nullable=False)
     recovery_s = Column(Integer, nullable=False)
     dry_run = Column(Boolean, nullable=False, default=True)
+    workload_n = Column(Integer, default=100000)  # prime-count bound per request: scales CPU cost
     workload_rps = Column(Float, default=0.0)  # traffic generated through the gateway during the experiment
     injector = Column(String(50))
 
@@ -70,6 +71,7 @@ _ADDED_COLUMNS = (
     ("experiments", "fault_applied_at", "TIMESTAMPTZ"),
     ("experiments", "rollback_started_at", "TIMESTAMPTZ"),
     ("experiments", "workload_rps", "DOUBLE PRECISION DEFAULT 0"),
+    ("experiments", "workload_n", "INTEGER DEFAULT 100000"),
 )
 
 

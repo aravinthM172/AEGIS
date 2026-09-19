@@ -4,6 +4,7 @@ import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.core.annotation.Order;
 import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
@@ -20,6 +21,7 @@ import java.util.UUID;
  * dependency failed), and read the correlation ids from ATTR_REQUEST_ID / ATTR_TRACE_ID.
  */
 @Component
+@Order(10)
 public class TelemetryFilter extends OncePerRequestFilter {
 
     public static final String ATTR_REQUEST_ID = "faultscope.request_id";
