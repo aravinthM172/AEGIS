@@ -23,7 +23,7 @@ class HttpErrorHook:
         self._status = 500
         self._expires_at = 0.0
 
-    def set(self, rate: float, status: int, ttl_s: int) -> dict:
+    def activate(self, rate: float, status: int, ttl_s: int) -> dict:
         with self._lock:
             self._rate, self._status, self._expires_at = rate, status, time.monotonic() + ttl_s
         return self.state()
@@ -68,7 +68,7 @@ def install(app: FastAPI) -> None:
         rate, status, ttl = float(body["rate"]), int(body.get("status", 500)), int(body.get("ttl_s", 60))
         if not (0 < rate <= 1 and 500 <= status <= 599 and 1 <= ttl <= 900):
             raise HTTPException(status_code=422, detail="rate in (0,1], status 500-599, ttl_s 1-900")
-        return hook.set(rate, status, ttl)
+        return hook.activate(rate, status, ttl)
 
     @router.delete("/http-error")
     def deactivate(x_fault_token: str = Header(default="")):

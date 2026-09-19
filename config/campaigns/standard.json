@@ -1,0 +1,16 @@
+{
+  "name": "standard-resilience-suite",
+  "description": "One scenario per component/fault of the demo workload, all under the same load, plus a no-fault control that measures the noise floor. Run with repetitions >= 3 for medium confidence.",
+  "repetitions": 3,
+  "cooldown_s": 15,
+  "experiments": [
+    {"target": "cpp-service", "fault_type": "stop_container", "duration_s": 12, "baseline_s": 8, "recovery_s": 15, "dry_run": false, "workload_rps": 4, "name": "stop cpp-service"},
+    {"target": "cpp-service", "fault_type": "cpu_stress", "parameters": {"cpu_limit_cores": 0.15, "workers": 2}, "duration_s": 12, "baseline_s": 8, "recovery_s": 15, "dry_run": false, "workload_rps": 4, "workload_n": 2000000, "name": "cpu starve cpp-service (heavy requests)"},
+    {"target": "java-service", "fault_type": "pause_container", "duration_s": 12, "baseline_s": 8, "recovery_s": 15, "dry_run": false, "workload_rps": 4, "name": "freeze java-service"},
+    {"target": "java-service", "fault_type": "http_error", "parameters": {"error_rate": 0.6, "status_code": 503}, "duration_s": 12, "baseline_s": 8, "recovery_s": 12, "dry_run": false, "workload_rps": 4, "name": "60% errors on java-service"},
+    {"target": "postgres", "fault_type": "latency", "parameters": {"latency_ms": 300}, "duration_s": 12, "baseline_s": 8, "recovery_s": 15, "dry_run": false, "workload_rps": 4, "name": "300ms latency on postgres"},
+    {"target": "kafka", "fault_type": "stop_container", "duration_s": 12, "baseline_s": 8, "recovery_s": 25, "dry_run": false, "workload_rps": 4, "name": "stop kafka"},
+    {"target": "redis", "fault_type": "pause_container", "duration_s": 12, "baseline_s": 8, "recovery_s": 12, "dry_run": false, "workload_rps": 4, "name": "freeze redis"},
+    {"target": "cpp-service", "fault_type": "stop_container", "duration_s": 12, "baseline_s": 8, "recovery_s": 12, "dry_run": true, "workload_rps": 4, "name": "control (no fault)"}
+  ]
+}

@@ -1,6 +1,7 @@
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import Depends, APIRouter, HTTPException, Query
+from app.remediation.auth import require_role
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -36,7 +37,7 @@ def catalog():
     return catalog_as_dict()
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, dependencies=[Depends(require_role("operator"))])
 def create_experiment(body: ExperimentRequest):
     try:
         return get_engine().create(**body.model_dump())
@@ -77,7 +78,7 @@ def get_result(experiment_id: str):
     return {k: v for k, v in result.items() if k != "workload_samples"}
 
 
-@router.post("/{experiment_id}/analyze")
+@router.post("/{experiment_id}/analyze", dependencies=[Depends(require_role("operator"))])
 def reanalyze(experiment_id: str):
     """Recompute the analysis from stored telemetry (e.g. after late-arriving events)."""
     from app.analysis.service import analyze_and_store
@@ -93,7 +94,7 @@ def reanalyze(experiment_id: str):
     return {k: v for k, v in result.items() if k != "workload_samples"}
 
 
-@router.post("/{experiment_id}/abort", status_code=202)
+@router.post("/{experiment_id}/abort", status_code=202, dependencies=[Depends(require_role("operator"))])
 def abort_experiment(experiment_id: str):
     """Kill switch: the runner stops waiting, rolls the fault back and finishes as ABORTED."""
     try:
@@ -104,7 +105,7 @@ def abort_experiment(experiment_id: str):
         raise HTTPException(status_code=409, detail=str(exc))
 
 
-@router.post("/{experiment_id}/rollback")
+@router.post("/{experiment_id}/rollback", dependencies=[Depends(require_role("operator"))])
 def retry_rollback(experiment_id: str):
     """Retry rollback for an experiment in ROLLBACK_FAILED (frees the active slot when it succeeds)."""
     try:

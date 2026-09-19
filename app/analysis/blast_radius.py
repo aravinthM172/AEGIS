@@ -16,7 +16,7 @@ An event is `degraded` if it failed (status >= 500 or no status) or was slower t
 max(2 x baseline p95, baseline p95 + 50ms). This catches latency amplification, where
 nothing errors but everything is slow.
 """
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 
 MIN_EVENTS = 8              # below this a window is not trusted
 AFFECTED_THRESHOLD_PCT = 10.0
@@ -68,6 +68,7 @@ def window_stats(events: list[dict], seconds: float, threshold: float | None) ->
         "degraded_pct": round(100.0 * degraded / n, 1) if n else None,
         "p50_ms": _r(percentile(lat, 0.5)),
         "p95_ms": _r(percentile(lat, 0.95)),
+        "status_counts": dict(sorted(Counter(str(e.get("status")) for e in events).items())),
     }
 
 

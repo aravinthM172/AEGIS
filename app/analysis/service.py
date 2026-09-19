@@ -1,16 +1,21 @@
 """Database-facing part of blast-radius analysis: load telemetry, run the pure analysis, store the result."""
 import logging
 import os
+import uuid
 from collections import defaultdict
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 
 from app.analysis.blast_radius import analyze
+from app.analysis.models import FailureSignatureRow
+from app.analysis.resilience import build_resilience
+from app.analysis.signatures import build_signature
 from app.database import SessionLocal
 from app.experiments.catalog import PROTECTED_TARGETS
 from app.experiments.models import ExperimentEventRow, ExperimentRow
 from app.models import ServiceDependencyRow
+from app.topology_graph import dependencies
 
 logger = logging.getLogger("analysis")
 
@@ -98,7 +103,79 @@ def analyze_and_store(session_factory, exp_id: str) -> dict:
                                   detail={"status": result.get("status"),
                                           "affected_services": result.get("affected_services", [])}))
         db.commit()
+    store_signature(session_factory, exp_id, result)
+    _update_knowledge(session_factory, exp_id, result)
     return result
+
+
+def _update_knowledge(session_factory, exp_id: str, result: dict) -> None:
+    """Best effort: an experiment's report becomes retrievable knowledge. Must never fail the analysis."""
+    try:
+        from app.ai.service import get_kb
+        from app.experiments.engine import to_dict
+
+        with session_factory() as db:
+            exp = to_dict(db.get(ExperimentRow, exp_id))
+        get_kb().upsert_experiment(exp, {k: v for k, v in result.items() if k != "workload_samples"})
+    except Exception:
+        logger.warning("could not add experiment %s to the knowledge base", exp_id, exc_info=True)
+
+
+def store_signature(session_factory, exp_id: str, result: dict) -> str | None:
+    """Derive and (re)store the failure signature of an experiment. Returns its id, or None if not analyzable."""
+    with session_factory() as db:
+        exp = db.get(ExperimentRow, exp_id)
+        meta = {"target": exp.target, "fault_type": exp.fault_type, "parameters": exp.parameters,
+                "duration_s": exp.duration_s, "workload_rps": exp.workload_rps, "workload_n": exp.workload_n,
+                "dry_run": exp.dry_run}
+        signature = build_signature(meta, result)
+        existing = db.query(FailureSignatureRow).filter_by(experiment_id=exp_id).first()
+        if signature is None:
+            if existing:
+                db.delete(existing)
+                db.commit()
+            return None
+        row = existing or FailureSignatureRow(id=str(uuid.uuid4()), experiment_id=exp_id)
+        row.kind, row.target, row.fault_type = signature["kind"], exp.target, exp.fault_type
+        row.fingerprint, row.signature = signature["fingerprint"], signature
+        db.add(row)
+        db.commit()
+        return row.id
+
+
+def signature_dict(row: FailureSignatureRow) -> dict:
+    return {"id": row.id, "experiment_id": row.experiment_id, "kind": row.kind, "target": row.target,
+            "fault_type": row.fault_type, "fingerprint": row.fingerprint,
+            "created_at": row.created_at.isoformat() if row.created_at else None, "signature": row.signature}
+
+
+def rebuild_all(session_factory) -> dict:
+    """Re-analyse every finished experiment that reached its fault window and rebuild its signature."""
+    with session_factory() as db:
+        ids = [r.id for r in db.query(ExperimentRow)
+               .filter(ExperimentRow.status.in_(("COMPLETED", "ABORTED")))
+               .filter(ExperimentRow.fault_applied_at.isnot(None)).all()]
+    counts = {"experiments": len(ids), "signatures": 0, "skipped": 0, "failed": []}
+    for exp_id in ids:
+        try:
+            result = analyze_and_store(session_factory, exp_id)
+            counts["signatures" if result.get("status") == "analyzed" else "skipped"] += 1
+        except Exception as exc:  # keep going: one bad experiment must not block the rest
+            logger.exception("rebuild failed for %s", exp_id)
+            counts["failed"].append({"experiment_id": exp_id, "error": f"{type(exc).__name__}: {exc}"})
+    return counts
+
+
+def resilience_report(session_factory) -> dict:
+    with session_factory() as db:
+        rows = db.query(FailureSignatureRow).order_by(FailureSignatureRow.created_at).all()
+        signatures = [{"id": r.id, "signature": r.signature} for r in rows]
+        edges = [(e.source, e.target) for e in db.query(ServiceDependencyRow).all()]
+        services = {s for pair in edges for s in pair}
+    dependency_map = {name: set(dependencies(name, edges)) for name in services}
+    report = build_resilience(signatures, dependency_map, excluded=frozenset(PROTECTED_TARGETS))
+    report["signatures_used"] = len(signatures)
+    return report
 
 
 def default_hook(exp_id: str) -> None:

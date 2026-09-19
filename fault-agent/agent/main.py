@@ -78,6 +78,28 @@ def apply_fault(body: FaultRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+class ActionRequest(BaseModel):
+    action: str
+    container: str
+
+
+@app.post("/actions", dependencies=[Depends(require_token)])
+def run_action(body: ActionRequest):
+    """Remediation primitives (restart, lift_cpu_cap) on allowlisted containers; policy lives in the control plane."""
+    try:
+        return manager.run_action(body.action, body.container)
+    except NotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except UnknownContainer as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except UnsupportedFault as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Conflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except FaultError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.delete("/faults/{experiment_id}", dependencies=[Depends(require_token)])
 def rollback_fault(experiment_id: str):
     try:

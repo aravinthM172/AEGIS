@@ -79,6 +79,38 @@ class FaultManager:
     def supported(self) -> list[str]:
         return sorted(self._handlers)
 
+    # ---- remediation actions (not faults): only what needs Docker access ---------------------------
+
+    REMEDIATION_ACTIONS = ("restart", "lift_cpu_cap")
+
+    def run_action(self, action: str, container: str) -> dict:
+        """Remediate a real incident on an allowlisted container. Refused while an experiment fault is active on it."""
+        if action not in self.REMEDIATION_ACTIONS:
+            raise UnsupportedFault(f"unsupported action '{action}' (supported: {', '.join(self.REMEDIATION_ACTIONS)})")
+        c = self._get_allowed(container)
+        with self._lock:
+            busy = [e for e, r in self._active.items() if r["container"] == container]
+        if busy:
+            raise Conflict(f"container '{container}' has an active experiment fault ({busy[0]}); refusing to remediate")
+        c.reload()
+        before = {"status": c.status, "cpu_quota": (c.attrs.get("HostConfig") or {}).get("CpuQuota", 0)}
+        if action == "restart":
+            if c.status == "paused":
+                c.unpause()
+            elif c.status == "running":
+                c.restart(timeout=10)
+            else:
+                c.start()
+            after = {"status": self._wait_running(c)}
+        else:  # lift_cpu_cap: vertical scale-up by removing the CPU quota
+            c.update(cpu_period=100000, cpu_quota=-1)
+            c.reload()
+            quota = (c.attrs.get("HostConfig") or {}).get("CpuQuota", 0)
+            if quota > 0:
+                raise FaultError(f"cpu quota still {quota} after lift_cpu_cap")
+            after = {"status": c.status, "cpu_quota": quota}
+        return {"action": action, "container": container, "before": before, "after": after}
+
     def apply(self, experiment_id: str, container: str, fault_type: str,
               parameters: dict | None, ttl_s: int) -> dict:
         if fault_type not in self._handlers:
