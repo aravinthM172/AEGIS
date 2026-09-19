@@ -96,3 +96,15 @@ def test_load_file_requires_evidence(tmp_path):
                  '"dependencies":[{"source":"a","target":"b","relation":"reads_writes"}]}')
     with pytest.raises(TopologyError, match="evidence is mandatory"):
         load_file(str(f))
+
+
+def test_repository_topology_has_the_workload_call_chain():
+    path = os.path.join(os.path.dirname(__file__), "..", "config", "topology.json")
+    _, deps = load_file(path)
+    edges = [(d["source"], d["target"]) for d in deps]
+    # gateway -> java-service -> cpp-service: a failure in cpp-service must propagate two hops up
+    assert dependents("cpp-service", edges) == {"java-service": 1, "gateway": 2}
+    assert dependents("java-service", edges) == {"gateway": 1}
+    assert dependencies("gateway", edges)["cpp-service"] == 2
+    # postgres reaches the gateway only through java-service
+    assert dependents("postgres", edges)["gateway"] == 2

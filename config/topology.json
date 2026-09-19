@@ -1,26 +1,135 @@
 {
   "_comment": "Declared topology. Source of truth for origin=declared nodes and edges; loaded at control-plane startup. An edge 'source -> target' means source DEPENDS ON target. Every edge must cite evidence from this repo. Do not add edges that are not backed by code/config.",
   "services": [
-    {"name": "control-plane", "kind": "service", "technology": "python/fastapi", "container": "aegis-api", "description": "FaultScope control plane API (incidents, telemetry read APIs, topology)"},
-    {"name": "telemetry-consumer", "kind": "service", "technology": "python", "container": "aegis-telemetry-consumer", "description": "Ingests the telemetry topic into Postgres and Redis"},
-    {"name": "java-service", "kind": "service", "technology": "java/spring-boot", "container": "aegis-java-service", "description": "Monitored business workload; consumes incidents"},
-    {"name": "cpp-service", "kind": "service", "technology": "c++", "container": "aegis-cpp-service", "description": "Monitored high-performance service"},
-    {"name": "postgres", "kind": "database", "technology": "postgres:16", "container": "aegis-postgres", "description": "Incidents, telemetry history"},
-    {"name": "redis", "kind": "cache", "technology": "redis:7", "container": "aegis-redis", "description": "Live service state, rate limiting, metrics cache"},
-    {"name": "kafka", "kind": "broker", "technology": "apache/kafka:4.0.0", "container": "aegis-kafka", "description": "Event backbone (telemetry, aegis-incidents)"}
+    {
+      "name": "control-plane",
+      "kind": "service",
+      "technology": "python/fastapi",
+      "container": "aegis-api",
+      "description": "FaultScope control plane API (incidents, telemetry read APIs, topology)"
+    },
+    {
+      "name": "telemetry-consumer",
+      "kind": "service",
+      "technology": "python",
+      "container": "aegis-telemetry-consumer",
+      "description": "Ingests the telemetry topic into Postgres and Redis"
+    },
+    {
+      "name": "gateway",
+      "kind": "service",
+      "technology": "python/fastapi",
+      "container": "aegis-gateway",
+      "description": "Entry point of the monitored workload chain (POST /api/jobs)"
+    },
+    {
+      "name": "java-service",
+      "kind": "service",
+      "technology": "java/spring-boot",
+      "container": "aegis-java-service",
+      "description": "Monitored business workload; consumes incidents"
+    },
+    {
+      "name": "cpp-service",
+      "kind": "service",
+      "technology": "c++",
+      "container": "aegis-cpp-service",
+      "description": "Monitored high-performance service"
+    },
+    {
+      "name": "postgres",
+      "kind": "database",
+      "technology": "postgres:16",
+      "container": "aegis-postgres",
+      "description": "Incidents, telemetry history"
+    },
+    {
+      "name": "redis",
+      "kind": "cache",
+      "technology": "redis:7",
+      "container": "aegis-redis",
+      "description": "Live service state, rate limiting, metrics cache"
+    },
+    {
+      "name": "kafka",
+      "kind": "broker",
+      "technology": "apache/kafka:4.0.0",
+      "container": "aegis-kafka",
+      "description": "Event backbone (telemetry, aegis-incidents)"
+    }
   ],
   "dependencies": [
-    {"source": "control-plane", "target": "postgres", "relation": "reads_writes", "evidence": "docker-compose.yml aegis.DATABASE_URL; app/database.py; app/api.py incidents"},
-    {"source": "control-plane", "target": "redis", "relation": "reads_writes", "evidence": "docker-compose.yml aegis.REDIS_URL; app/redis_client.py; rate limit + service state in app/api.py"},
-    {"source": "control-plane", "target": "kafka", "relation": "produces", "evidence": "app/kafka_client.py publish_incident (aegis-incidents); app/telemetry.py emit (telemetry)"},
-
-    {"source": "telemetry-consumer", "target": "kafka", "relation": "consumes", "evidence": "app/telemetry_consumer.py KafkaConsumer(telemetry)"},
-    {"source": "telemetry-consumer", "target": "postgres", "relation": "reads_writes", "evidence": "app/telemetry_consumer.py store_event -> telemetry_events"},
-    {"source": "telemetry-consumer", "target": "redis", "relation": "reads_writes", "evidence": "app/telemetry_consumer.py update_live_state -> service:health:*"},
-
-    {"source": "java-service", "target": "kafka", "relation": "consumes", "evidence": "IncidentConsumer @KafkaListener(aegis-incidents); telemetry/TelemetryFilter produces to telemetry"},
-    {"source": "java-service", "target": "postgres", "relation": "reads_writes", "evidence": "docker-compose.yml java-service.SPRING_DATASOURCE_URL; JPA IncidentRepository"},
-
-    {"source": "cpp-service", "target": "kafka", "relation": "produces", "evidence": "cpp-service/src/telemetry.hpp Emitter (librdkafka) -> telemetry"}
+    {
+      "source": "control-plane",
+      "target": "postgres",
+      "relation": "reads_writes",
+      "evidence": "docker-compose.yml aegis.DATABASE_URL; app/database.py; app/api.py incidents"
+    },
+    {
+      "source": "control-plane",
+      "target": "redis",
+      "relation": "reads_writes",
+      "evidence": "docker-compose.yml aegis.REDIS_URL; app/redis_client.py; rate limit + service state in app/api.py"
+    },
+    {
+      "source": "control-plane",
+      "target": "kafka",
+      "relation": "produces",
+      "evidence": "app/kafka_client.py publish_incident (aegis-incidents); app/telemetry.py emit (telemetry)"
+    },
+    {
+      "source": "telemetry-consumer",
+      "target": "kafka",
+      "relation": "consumes",
+      "evidence": "app/telemetry_consumer.py KafkaConsumer(telemetry)"
+    },
+    {
+      "source": "telemetry-consumer",
+      "target": "postgres",
+      "relation": "reads_writes",
+      "evidence": "app/telemetry_consumer.py store_event -> telemetry_events"
+    },
+    {
+      "source": "telemetry-consumer",
+      "target": "redis",
+      "relation": "reads_writes",
+      "evidence": "app/telemetry_consumer.py update_live_state -> service:health:*"
+    },
+    {
+      "source": "java-service",
+      "target": "kafka",
+      "relation": "consumes",
+      "evidence": "IncidentConsumer @KafkaListener(aegis-incidents); telemetry/TelemetryFilter produces to telemetry"
+    },
+    {
+      "source": "java-service",
+      "target": "postgres",
+      "relation": "reads_writes",
+      "evidence": "docker-compose.yml java-service.SPRING_DATASOURCE_URL; JPA IncidentRepository"
+    },
+    {
+      "source": "cpp-service",
+      "target": "kafka",
+      "relation": "produces",
+      "evidence": "cpp-service/src/telemetry.hpp Emitter (librdkafka) -> telemetry"
+    },
+    {
+      "source": "gateway",
+      "target": "java-service",
+      "relation": "calls",
+      "evidence": "gateway/main.py create_job POSTs java-service /jobs (JAVA_SERVICE_URL in docker-compose.yml)"
+    },
+    {
+      "source": "gateway",
+      "target": "kafka",
+      "relation": "produces",
+      "evidence": "gateway/main.py via app/telemetry.py emit (telemetry topic)"
+    },
+    {
+      "source": "java-service",
+      "target": "cpp-service",
+      "relation": "calls",
+      "evidence": "java-service jobs/CppClient.java GET /compute (CPP_SERVICE_URL in docker-compose.yml)"
+    }
   ]
 }

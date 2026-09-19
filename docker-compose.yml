@@ -129,6 +129,27 @@ services:
     networks:
       - aegis-network
 
+  gateway:
+    build:
+      context: .
+      dockerfile: app/Dockerfile
+    container_name: aegis-gateway
+    command: uvicorn gateway.main:app --host 0.0.0.0 --port 8090
+    depends_on:
+      kafka:
+        condition: service_healthy
+      java-service:
+        condition: service_started
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      TELEMETRY_TOPIC: telemetry
+      SERVICE_NAME: gateway
+      JAVA_SERVICE_URL: http://java-service:8081
+    ports:
+      - "8090:8090"
+    networks:
+      - aegis-network
+
   java-service:
     build:
       context: ./java-service
@@ -143,6 +164,7 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/aegis
       SPRING_DATASOURCE_USERNAME: aegis
       SPRING_DATASOURCE_PASSWORD: aegis
+      CPP_SERVICE_URL: http://cpp-service:8082
     ports:
       - "8081:8081"
     networks:

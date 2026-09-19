@@ -1,60 +1,52 @@
 package com.aegis.service.telemetry;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.lang.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.servlet.HandlerMapping;
 
 import java.io.IOException;
-import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
 /**
- * Emits one FaultScope TelemetryEvent per HTTP request to the Kafka
- * telemetry topic. Field names match app/telemetry.py (TelemetryEvent).
+ * Emits one http_request TelemetryEvent per request. Handlers can enrich the event by
+ * setting request attributes ATTR_ERROR_TYPE / ATTR_DEPENDENCY (e.g. when a downstream
+ * dependency failed), and read the correlation ids from ATTR_REQUEST_ID / ATTR_TRACE_ID.
  */
 @Component
 public class TelemetryFilter extends OncePerRequestFilter {
 
-    private static final Logger log = LoggerFactory.getLogger(TelemetryFilter.class);
+    public static final String ATTR_REQUEST_ID = "faultscope.request_id";
+    public static final String ATTR_TRACE_ID = "faultscope.trace_id";
+    public static final String ATTR_ERROR_TYPE = "faultscope.error_type";
+    public static final String ATTR_DEPENDENCY = "faultscope.dependency";
 
-    private final KafkaTemplate<String, String> kafka;
-    private final ObjectMapper mapper;
-    private final String topic;
-    private final String serviceName;
+    private final TelemetryPublisher publisher;
 
-    public TelemetryFilter(
-            KafkaTemplate<String, String> kafka,
-            ObjectMapper mapper,
-            @Value("${faultscope.telemetry.topic:telemetry}") String topic,
-            @Value("${faultscope.service-name:java-service}") String serviceName) {
-        this.kafka = kafka;
-        this.mapper = mapper;
-        this.topic = topic;
-        this.serviceName = serviceName;
+    public TelemetryFilter(TelemetryPublisher publisher) {
+        this.publisher = publisher;
     }
 
     @Override
     protected void doFilterInternal(
-            HttpServletRequest request,
-            HttpServletResponse response,
-            FilterChain chain) throws ServletException, IOException {
+            @NonNull HttpServletRequest request,
+            @NonNull HttpServletResponse response,
+            @NonNull FilterChain chain) throws ServletException, IOException {
 
         String requestId = headerOrRandom(request, "X-Request-ID");
         String traceId = request.getHeader("X-Trace-Id");
         if (traceId == null || traceId.isBlank()) {
             traceId = requestId;
         }
+        request.setAttribute(ATTR_REQUEST_ID, requestId);
+        request.setAttribute(ATTR_TRACE_ID, traceId);
+        response.setHeader("X-Request-ID", requestId);
 
         long startedNanos = System.nanoTime();
         int status = 500;
@@ -71,41 +63,23 @@ public class TelemetryFilter extends OncePerRequestFilter {
             throw ex;
         } finally {
             double latencyMs = Math.round((System.nanoTime() - startedNanos) / 1_000.0) / 1_000.0;
-            emit(request, requestId, traceId, latencyMs, status, errorType);
-        }
-    }
 
-    private void emit(HttpServletRequest request, String requestId, String traceId,
-                      double latencyMs, int status, String errorType) {
-        try {
+            Object handlerError = request.getAttribute(ATTR_ERROR_TYPE);
+            if (handlerError != null) {
+                errorType = handlerError.toString();
+            }
+
             Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
-
             Map<String, Object> metadata = new LinkedHashMap<>();
             metadata.put("method", request.getMethod());
             metadata.put("path", pattern != null ? pattern.toString() : request.getRequestURI());
+            Object dependency = request.getAttribute(ATTR_DEPENDENCY);
+            if (dependency != null) {
+                metadata.put("dependency", dependency.toString());
+            }
 
-            Map<String, Object> event = new LinkedHashMap<>();
-            event.put("event_id", UUID.randomUUID().toString());
-            event.put("timestamp", Instant.now().toString());
-            event.put("service", serviceName);
-            event.put("event_type", "http_request");
-            event.put("severity", status >= 500 ? "ERROR" : status >= 400 ? "WARN" : "INFO");
-            event.put("request_id", requestId);
-            event.put("trace_id", traceId);
-            event.put("latency_ms", latencyMs);
-            event.put("status_code", status);
-            event.put("error_type", errorType);
-            event.put("metadata", metadata);
-
-            kafka.send(topic, serviceName, mapper.writeValueAsString(event))
-                 .whenComplete((result, ex) -> {
-                     if (ex != null) {
-                         log.warn("telemetry send failed: {}", ex.toString());
-                     }
-                 });
-        } catch (Exception ex) {
-            // telemetry must never break the request path
-            log.warn("telemetry emit failed", ex);
+            publisher.publish("http_request", TelemetryPublisher.severityFor(status),
+                    requestId, traceId, latencyMs, status, errorType, metadata);
         }
     }
 

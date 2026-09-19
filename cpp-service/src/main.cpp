@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "telemetry.hpp"
 
@@ -54,6 +55,62 @@ std::string requestMethod(const std::string& request) {
     const auto sp = request.find(' ');
     return sp == std::string::npos ? "UNKNOWN" : request.substr(0, sp);
 }
+
+// Number of primes <= n (sieve of Eratosthenes). Real CPU work, deterministic:
+// pi(100000) = 9592, pi(1000000) = 78498.
+std::uint64_t countPrimes(std::uint64_t n) {
+    if (n < 2) {
+        return 0;
+    }
+    std::vector<bool> composite(n + 1, false);
+    std::uint64_t count = 0;
+    for (std::uint64_t i = 2; i <= n; ++i) {
+        if (!composite[i]) {
+            ++count;
+            for (std::uint64_t j = i * i; j <= n; j += i) {
+                composite[j] = true;
+            }
+        }
+    }
+    return count;
+}
+
+enum class QueryResult { Missing, Valid, Invalid };
+
+// Parse an unsigned integer query parameter from the request line ("GET /x?n=5 HTTP/1.1").
+QueryResult queryUint(const std::string& request, const std::string& key, std::uint64_t& out) {
+    const std::string line = request.substr(0, request.find("\r\n"));
+    const auto qmark = line.find('?');
+    if (qmark == std::string::npos) {
+        return QueryResult::Missing;
+    }
+    const auto end = line.find(' ', qmark);
+    const std::string query = line.substr(qmark + 1, end == std::string::npos ? std::string::npos : end - qmark - 1);
+
+    const std::string needle = key + "=";
+    std::size_t pos = 0;
+    while (pos <= query.size()) {
+        const auto amp = query.find('&', pos);
+        const std::string pair = query.substr(pos, amp == std::string::npos ? std::string::npos : amp - pos);
+        if (pair.compare(0, needle.size(), needle) == 0) {
+            const std::string value = pair.substr(needle.size());
+            if (value.empty() || value.size() > 12 ||
+                !std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+                return QueryResult::Invalid;
+            }
+            out = std::stoull(value);
+            return QueryResult::Valid;
+        }
+        if (amp == std::string::npos) {
+            break;
+        }
+        pos = amp + 1;
+    }
+    return QueryResult::Missing;
+}
+
+constexpr std::uint64_t kMaxComputeN = 5000000;
+constexpr std::uint64_t kDefaultComputeN = 100000;
 
 std::atomic<std::uint64_t> requestCount{0};
 
@@ -138,9 +195,41 @@ int main() {
         std::string request(buffer);
         std::string body;
         std::string route;
+        int status = 200;
+        const char* reason = "OK";
         requestCount.fetch_add(1);
 
-        if (request.find("GET /health") != std::string::npos) {
+        if (request.find("GET /compute") != std::string::npos) {
+
+            route = "/compute";
+            std::uint64_t n = kDefaultComputeN;
+            const QueryResult parsed = queryUint(request, "n", n);
+
+            if (parsed == QueryResult::Invalid || n < 1 || n > kMaxComputeN) {
+                status = 400;
+                reason = "Bad Request";
+                body =
+                    "{"
+                    "\"service\":\"cpp-service\","
+                    "\"error\":\"n must be an integer between 1 and " + std::to_string(kMaxComputeN) + "\""
+                    "}";
+            } else {
+                const auto computeStart = std::chrono::steady_clock::now();
+                const std::uint64_t primes = countPrimes(n);
+                const double computeMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - computeStart).count();
+                char ms[32];
+                std::snprintf(ms, sizeof(ms), "%.3f", computeMs);
+                body =
+                    "{"
+                    "\"service\":\"cpp-service\","
+                    "\"n\":" + std::to_string(n) + ","
+                    "\"primes\":" + std::to_string(primes) + ","
+                    "\"compute_ms\":" + ms +
+                    "}";
+            }
+
+        } else if (request.find("GET /health") != std::string::npos) {
 
             route = "/health";
 
@@ -173,7 +262,8 @@ int main() {
         }
 
         std::string response =
-            "HTTP/1.1 200 OK\r\n"
+            "HTTP/1.1 " + std::to_string(status) + " " + reason +
+            "\r\n"
             "Content-Type: application/json\r\n"
             "Content-Length: " +
             std::to_string(body.size()) +
@@ -201,7 +291,7 @@ int main() {
         }
         event.latency_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - startedAt).count();
-        event.status_code = 200;  // this service answers every request with 200
+        event.status_code = status;
         event.method = requestMethod(request);
         event.path = route;
         emitter.emit(event);
