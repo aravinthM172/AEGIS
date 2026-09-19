@@ -1,13 +1,16 @@
 import logging
+import os
 import threading
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import router
 from app.ai import models as _ai_models  # noqa: F401  (registers tables)
 from app.ai.routes import router as ai_router
 from app.analysis import models as _analysis_models  # noqa: F401  (registers tables)
 from app.analysis.routes import router as analysis_router
+from app.overview import router as overview_router
 from app.experiments import campaign as _campaign  # noqa: F401  (registers tables)
 from app.experiments import models as _experiment_models  # noqa: F401  (registers tables)
 from app.experiments.campaign import get_campaign_runner
@@ -49,10 +52,19 @@ app.include_router(campaign_router)
 app.include_router(analysis_router)
 app.include_router(ai_router)
 app.include_router(prediction_router)
+app.include_router(overview_router)
 app.include_router(remediation_router)
 
 
 install_telemetry(app)
+
+# The Control Center (browser) calls this API from another origin. Reads and the API-key header only.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in os.getenv("FRONTEND_ORIGINS", "http://localhost:3000").split(",") if o.strip()],
+    allow_methods=["GET", "POST"],
+    allow_headers=["X-API-Key", "Content-Type"],
+)
 
 
 @app.on_event("startup")

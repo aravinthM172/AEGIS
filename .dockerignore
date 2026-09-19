@@ -18,3 +18,4 @@ llm-service
 llm-service-backup-before-structured-analysis
 spark-job
 stash*
+frontend

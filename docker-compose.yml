@@ -228,6 +228,19 @@ services:
     networks:
       - aegis-network
 
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+    container_name: aegis-frontend
+    depends_on:
+      - aegis
+    ports:
+      - "3000:3000"
+    networks:
+      - aegis-network
+
   minio:
     image: minio/minio:latest
     container_name: aegis-minio
