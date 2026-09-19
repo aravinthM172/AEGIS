@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.models import ServiceDependencyRow, ServiceRow
 from app.redis_client import get_redis
-from app.topology_graph import dependencies, dependents, impact_ranking
+from app.topology_graph import dependencies, dependents, impact_ranking, reconcile
+from app.topology_observed import observed_edges
 
 router = APIRouter(prefix="/api", tags=["Topology"])
 
@@ -39,6 +42,27 @@ def _edge_dict(row: ServiceDependencyRow) -> dict:
 
 def _edges(db: Session) -> list[ServiceDependencyRow]:
     return db.query(ServiceDependencyRow).order_by(ServiceDependencyRow.source, ServiceDependencyRow.target).all()
+
+
+def _window(window_minutes: int, since: datetime | None, until: datetime | None) -> tuple[datetime, datetime | None]:
+    """Explicit `since` wins; otherwise the last `window_minutes`."""
+    if since is not None:
+        since = since if since.tzinfo else since.replace(tzinfo=timezone.utc)
+    else:
+        since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    if until is not None and until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    return since, until
+
+
+def _pairs(db: Session, basis: str, since: datetime, until: datetime | None) -> list[tuple[str, str]]:
+    """Edge pairs for graph queries: declared topology, observed telemetry, or both."""
+    pairs: set[tuple[str, str]] = set()
+    if basis in ("declared", "combined"):
+        pairs |= {(e.source, e.target) for e in _edges(db)}
+    if basis in ("observed", "combined"):
+        pairs |= {(e["source"], e["target"]) for e in observed_edges(db, since, until)}
+    return sorted(pairs)
 
 
 def _require_service(db: Session, name: str) -> ServiceRow:
@@ -90,13 +114,22 @@ def service_dependencies(name: str, db: Session = Depends(get_db)):
 
 
 @router.get("/services/{name}/dependents")
-def service_dependents(name: str, db: Session = Depends(get_db)):
-    """If `name` fails, these services are structurally at risk (declared dependencies, NOT measured impact)."""
+def service_dependents(
+    name: str,
+    basis: str = Query("declared", pattern="^(declared|observed|combined)$"),
+    window_minutes: int = Query(60, ge=1, le=10080),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    db: Session = Depends(get_db),
+):
+    """If `name` fails, these services are structurally at risk. `basis` picks the graph:
+    declared topology, edges observed in telemetry (over the window), or both. NOT measured impact."""
     _require_service(db, name)
-    reach = dependents(name, [(e.source, e.target) for e in _edges(db)])
+    start, end = _window(window_minutes, since, until)
+    reach = dependents(name, _pairs(db, basis, start, end))
     return {
         "service": name,
-        "basis": "declared_structure",
+        "basis": basis,
         "at_risk": [{"service": s, "hops": h} for s, h in sorted(reach.items(), key=lambda kv: (kv[1], kv[0]))],
     }
 
@@ -112,8 +145,45 @@ def topology(db: Session = Depends(get_db)):
 
 
 @router.get("/topology/impact")
-def topology_impact(db: Session = Depends(get_db)):
+def topology_impact(
+    basis: str = Query("declared", pattern="^(declared|observed|combined)$"),
+    window_minutes: int = Query(60, ge=1, le=10080),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    db: Session = Depends(get_db),
+):
     """Which component has the largest STRUCTURAL blast radius (most transitive dependents)."""
+    start, end = _window(window_minutes, since, until)
     names = [n.name for n in db.query(ServiceRow).all()]
-    ranking = impact_ranking(names, [(e.source, e.target) for e in _edges(db)])
-    return {"basis": "declared_structure", "ranking": ranking}
+    ranking = impact_ranking(names, _pairs(db, basis, start, end))
+    return {"basis": basis, "ranking": ranking}
+
+
+@router.get("/topology/observed")
+def topology_observed(
+    window_minutes: int = Query(60, ge=1, le=10080),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    db: Session = Depends(get_db),
+):
+    """Edges actually seen in dependency_call telemetry, with call/error/latency stats."""
+    start, end = _window(window_minutes, since, until)
+    return {
+        "window": {"since": start.isoformat(), "until": end.isoformat() if end else None},
+        "edges": observed_edges(db, start, end),
+    }
+
+
+@router.get("/topology/reconciliation")
+def topology_reconciliation(
+    window_minutes: int = Query(60, ge=1, le=10080),
+    since: datetime | None = None,
+    until: datetime | None = None,
+    db: Session = Depends(get_db),
+):
+    """Declared vs observed: confirmed, unobserved, not_instrumented, undeclared (drift)."""
+    start, end = _window(window_minutes, since, until)
+    declared = [_edge_dict(e) for e in _edges(db)]
+    known = [n.name for n in db.query(ServiceRow).all()]
+    result = reconcile(declared, observed_edges(db, start, end), known)
+    return {"window": {"since": start.isoformat(), "until": end.isoformat() if end else None}, **result}

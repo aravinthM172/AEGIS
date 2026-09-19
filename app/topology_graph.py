@@ -153,3 +153,60 @@ def load_file(path: str) -> tuple[list[dict], list[dict]]:
 
     validate(names, [(d["source"], d["target"]) for d in dependencies_])
     return services, dependencies_
+
+
+# Relations for which the workload emits dependency_call telemetry today. Datastore and
+# Kafka edges are not instrumented, so their absence from telemetry proves nothing.
+OBSERVABLE_RELATIONS = frozenset({"calls"})
+
+
+def reconcile(
+    declared: Iterable[dict],
+    observed: Iterable[dict],
+    known_services: Iterable[str],
+    observable_relations: frozenset[str] = OBSERVABLE_RELATIONS,
+) -> dict:
+    """Compare the declared topology with edges observed in telemetry.
+
+    declared: dicts with source, target, relation
+    observed: dicts with source, target (+ stats, passed through untouched)
+
+    confirmed        declared and seen calling
+    unobserved       declared, observable, but no calls in the window (idle or broken)
+    not_instrumented declared, but no telemetry exists for that kind of edge
+    undeclared       seen calling but missing from the declared topology (drift)
+    """
+    known = set(known_services)
+    observed_by_pair = {(o["source"], o["target"]): o for o in observed}
+    declared_list = sorted(declared, key=lambda d: (d["source"], d["target"], d["relation"]))
+    declared_pairs = {(d["source"], d["target"]) for d in declared_list}
+
+    confirmed, unobserved, not_instrumented = [], [], []
+    for d in declared_list:
+        entry = {"source": d["source"], "target": d["target"], "relation": d["relation"]}
+        pair = (d["source"], d["target"])
+        if pair in observed_by_pair:
+            confirmed.append({**entry, "observed": observed_by_pair[pair]})
+        elif d["relation"] in observable_relations:
+            unobserved.append(entry)
+        else:
+            not_instrumented.append(entry)
+
+    undeclared = []
+    for pair, o in sorted(observed_by_pair.items()):
+        if pair not in declared_pairs:
+            unknown = [name for name in pair if name not in known]
+            undeclared.append({**o, "unknown_services": unknown})
+
+    return {
+        "summary": {
+            "confirmed": len(confirmed),
+            "unobserved": len(unobserved),
+            "not_instrumented": len(not_instrumented),
+            "undeclared": len(undeclared),
+        },
+        "confirmed": confirmed,
+        "unobserved": unobserved,
+        "not_instrumented": not_instrumented,
+        "undeclared": undeclared,
+    }
