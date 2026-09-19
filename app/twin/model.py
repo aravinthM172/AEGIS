@@ -118,8 +118,10 @@ class TwinModel:
                 n = int(m.get("count", 2))
                 if m["service"] == target and n > 1:
                     target_impact = 100.0 / n
-                    assumptions.append(f"{target} runs {n} replicas behind a load balancer and one replica fails: "
-                                       f"about 1/{n} of requests are affected until it is removed")
+                    assumptions.append(f"{target} runs {n} replicas behind a load balancer and one replica fails ABRUPTLY "
+                                       f"and stays in rotation: about 1/{n} of requests are affected until it is removed. "
+                                       "A graceful removal (e.g. Kubernetes pod deletion, measured at 0% failed requests with "
+                                       "2 replicas) is removed from rotation first, so this is a pessimistic bound")
             else:
                 raise ValueError(f"unknown mutation type '{kind}'")
 

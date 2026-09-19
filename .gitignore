@@ -43,3 +43,4 @@ Thumbs.db
 # --- Spark ---
 spark-warehouse/
 /tmp/
+tools/bin/

@@ -1,0 +1,172 @@
+# The monitored call chain: gateway -> java-service -> cpp-service (+ postgres), plus the FaultScope
+# telemetry consumer and control plane so the cluster is observed exactly like the compose stack.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: cpp-service, namespace: faultscope, labels: { app: cpp-service } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: cpp-service } }
+  template:
+    metadata: { labels: { app: cpp-service } }
+    spec:
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: cpp-service
+          image: faultscope/cpp-service:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8082 }]
+          env:
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
+            - { name: SERVICE_NAME, value: cpp-service }
+            - { name: FAULT_HOOK_TOKEN, value: dev-token-change-me }
+          readinessProbe:
+            httpGet: { path: /health, port: 8082 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8082 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata: { name: cpp-service, namespace: faultscope }
+spec:
+  selector: { app: cpp-service }
+  ports: [{ port: 8082, targetPort: 8082 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: java-service, namespace: faultscope, labels: { app: java-service } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: java-service } }
+  template:
+    metadata: { labels: { app: java-service } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: java-service
+          image: faultscope/java-service:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8081 }]
+          env:
+            - { name: SPRING_KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
+            - { name: SPRING_DATASOURCE_URL, value: "jdbc:postgresql://postgres:5432/aegis" }
+            - { name: SPRING_DATASOURCE_USERNAME, value: aegis }
+            - { name: SPRING_DATASOURCE_PASSWORD, value: aegis }
+            - { name: CPP_SERVICE_URL, value: "http://cpp-service:8082" }
+            - { name: FAULT_HOOK_TOKEN, value: dev-token-change-me }
+          startupProbe:     # Spring Boot takes a while to start; do not let liveness kill it meanwhile
+            httpGet: { path: /health, port: 8081 }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /health, port: 8081 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8081 }
+            periodSeconds: 10
+            failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata: { name: java-service, namespace: faultscope }
+spec:
+  selector: { app: java-service }
+  ports: [{ port: 8081, targetPort: 8081 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: gateway, namespace: faultscope, labels: { app: gateway } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: gateway } }
+  template:
+    metadata: { labels: { app: gateway } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: gateway
+          image: faultscope/app:dev
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "gateway.main:app", "--host", "0.0.0.0", "--port", "8090"]
+          ports: [{ containerPort: 8090 }]
+          env:
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
+            - { name: SERVICE_NAME, value: gateway }
+            - { name: JAVA_SERVICE_URL, value: "http://java-service:8081" }
+            - { name: FAULT_HOOK_TOKEN, value: dev-token-change-me }
+          readinessProbe:
+            httpGet: { path: /health, port: 8090 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8090 }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata: { name: gateway, namespace: faultscope }
+spec:
+  selector: { app: gateway }
+  ports: [{ port: 8090, targetPort: 8090 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: telemetry-consumer, namespace: faultscope, labels: { app: telemetry-consumer } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: telemetry-consumer } }
+  template:
+    metadata: { labels: { app: telemetry-consumer } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: telemetry-consumer
+          image: faultscope/app:dev
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.telemetry_consumer"]
+          env:
+            - { name: DATABASE_URL, value: "postgresql+psycopg://aegis:aegis@postgres:5432/aegis" }
+            - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
+            - { name: TELEMETRY_TOPIC, value: telemetry }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: control-plane, namespace: faultscope, labels: { app: control-plane } }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: control-plane } }
+  template:
+    metadata: { labels: { app: control-plane } }
+    spec:
+      enableServiceLinks: false
+      containers:
+        - name: control-plane
+          image: faultscope/app:dev
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8000 }]
+          env:
+            - { name: DATABASE_URL, value: "postgresql+psycopg://aegis:aegis@postgres:5432/aegis" }
+            - { name: REDIS_URL, value: "redis://redis:6379/0" }
+            - { name: KAFKA_BOOTSTRAP_SERVERS, value: "kafka:9092" }
+            - { name: WORKLOAD_URL, value: "http://gateway:8090" }
+            - { name: FAULTSCOPE_API_KEYS, value: "dev-operator-key:operator,dev-admin-key:admin" }
+            # no FAULTSCOPE_ENV / FAULT_AGENT_URL: real fault injection is Docker-only, so real runs are refused here
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata: { name: control-plane, namespace: faultscope }
+spec:
+  selector: { app: control-plane }
+  ports: [{ port: 8000, targetPort: 8000 }]

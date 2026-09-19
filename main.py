@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+import time
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -69,24 +70,42 @@ app.add_middleware(
 )
 
 
+def _initialize() -> None:
+    """One initialisation attempt. Raises if the database is not reachable yet."""
+    Base.metadata.create_all(bind=engine)
+    ensure_columns(engine)
+    with SessionLocal() as db:
+        seed_registry(db)
+    recovered = get_engine().recover_orphans()
+    if recovered:
+        logger.warning("rolled back experiments orphaned by a restart: %s", recovered)
+    interrupted = get_campaign_runner().recover_interrupted()
+    if interrupted:
+        logger.warning("campaigns interrupted by a restart: %s", interrupted)
+    threading.Thread(target=_refresh_knowledge, name="kb-refresh", daemon=True).start()
+
+
+def _initialize_with_retry(attempts: int = 90, delay_s: float = 5.0) -> None:
+    """Start-order independent: keep trying until the database is up (Kubernetes gives no ordering guarantee)."""
+    for attempt in range(1, attempts + 1):
+        try:
+            _initialize()
+            logger.info("control plane initialised (attempt %d)", attempt)
+            return
+        except TopologyError:
+            logger.error("config/topology.json is invalid; service registry NOT updated", exc_info=True)
+            return
+        except Exception as exc:
+            logger.warning("initialisation attempt %d/%d failed (%s); retrying in %.0fs",
+                           attempt, attempts, type(exc).__name__, delay_s)
+            time.sleep(delay_s)
+    logger.error("control plane could not initialise after %d attempts", attempts)
+
+
 @app.on_event("startup")
 def init_db():
-    try:
-        Base.metadata.create_all(bind=engine)
-        ensure_columns(engine)
-        with SessionLocal() as db:
-            seed_registry(db)
-        recovered = get_engine().recover_orphans()
-        if recovered:
-            logger.warning("rolled back experiments orphaned by a restart: %s", recovered)
-        interrupted = get_campaign_runner().recover_interrupted()
-        if interrupted:
-            logger.warning("campaigns interrupted by a restart: %s", interrupted)
-        threading.Thread(target=_refresh_knowledge, name="kb-refresh", daemon=True).start()
-    except TopologyError:
-        logger.error("config/topology.json is invalid; service registry NOT updated", exc_info=True)
-    except Exception:
-        logger.warning("Database unavailable at startup; will retry on first use", exc_info=True)
+    # Off the startup path so the API (and its health probe) is available immediately.
+    threading.Thread(target=_initialize_with_retry, name="init", daemon=True).start()
 
 
 @app.get("/")

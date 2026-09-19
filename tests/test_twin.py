@@ -81,7 +81,7 @@ def test_fallback_scales_the_impact_by_the_miss_ratio():
 
 def test_replicas_reduce_the_target_impact_and_state_the_assumption():
     sim = model().simulate("cpp", "stop_container", [{"type": "replicas", "service": "cpp", "count": 2}])
-    assert sim["end_user_impact_pct"] == 50.0 and any("2 replicas" in a for a in sim["assumptions"])
+    assert sim["end_user_impact_pct"] == 50.0 and any("2 replicas" in a and "pessimistic bound" in a for a in sim["assumptions"])
 
 
 def test_unknown_mutation_is_rejected_not_ignored():
