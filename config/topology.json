@@ -56,6 +56,13 @@
       "technology": "apache/kafka:4.0.0",
       "container": "aegis-kafka",
       "description": "Event backbone (telemetry, aegis-incidents)"
+    },
+    {
+      "name": "job-tracker",
+      "kind": "service",
+      "technology": "python/fastapi + sqlite",
+      "container": "aegis-job-tracker",
+      "description": "Isolated test copy of the user's Job Application Tracker (targets/job-tracker); standalone, no declared dependencies"
     }
   ],
   "dependencies": [

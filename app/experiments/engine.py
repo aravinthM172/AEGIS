@@ -26,7 +26,7 @@ from app.experiments.injectors import (
     real_run_preflight as default_real_run_preflight,
 )
 from app.experiments.models import ExperimentEventRow, ExperimentRow
-from app.experiments.workload import WorkloadRunner
+from app.experiments.workload import WorkloadRunner, load_profile
 from app.models import ServiceRow
 
 logger = logging.getLogger("experiments")
@@ -103,7 +103,8 @@ def to_dict(exp: ExperimentRow, events: list[ExperimentEventRow] | None = None) 
 
 
 def default_workload_factory(exp: dict) -> WorkloadRunner:
-    return WorkloadRunner(rps=exp["workload_rps"], n=exp["workload_n"], trace_prefix=f"exp-{exp['id'][:8]}")
+    return WorkloadRunner(rps=exp["workload_rps"], n=exp["workload_n"], trace_prefix=f"exp-{exp['id'][:8]}",
+                          profile=load_profile(exp["target"]))
 
 
 class ExperimentEngine:

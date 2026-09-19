@@ -1,0 +1,43 @@
+# An isolated, monitored COPY of the Job Tracker for FaultScope experiments. It is not the live site:
+# it has its own empty test database and NO credentials (no Outlook/Gmail tokens, no .env).
+#
+#   docker build -t job-tracker-base:local ../../../Job-Tracker          # the user's code, untouched
+#   docker compose -f targets/job-tracker/docker-compose.yml up -d --build   # run from the Aegis root
+#
+# Requires the main FaultScope stack to be running (it joins its network to reach Kafka).
+services:
+  job-tracker:
+    build:
+      context: ../..
+      dockerfile: targets/job-tracker/Dockerfile
+    image: job-tracker-fs:local
+    container_name: aegis-job-tracker
+    labels:
+      faultscope.injectable: "true"
+      faultscope.fault_port: "8000"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      TELEMETRY_TOPIC: telemetry
+      SERVICE_NAME: job-tracker
+      FAULT_HOOK_TOKEN: ${FAULT_AGENT_TOKEN:-dev-token-change-me}
+      DATA_DIR: /data
+    volumes:
+      - job_tracker_test_data:/data
+    ports:
+      - "127.0.0.1:8100:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 10s
+    networks:
+      - aegis-network
+
+volumes:
+  job_tracker_test_data:
+
+networks:
+  aegis-network:
+    external: true
+    name: aegis_aegis-network

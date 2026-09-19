@@ -1,0 +1,12 @@
+{
+  "job-tracker": {
+    "base_url": "http://job-tracker:8000",
+    "requests": [
+      {"method": "GET", "path": "/jobs", "weight": 4},
+      {"method": "GET", "path": "/dashboard", "weight": 3},
+      {"method": "GET", "path": "/health", "weight": 1},
+      {"method": "POST", "path": "/jobs", "weight": 2,
+       "json": {"company": "FaultScopeTest", "role": "Synthetic", "job_id": "fs-load", "applied_date": "2026-01-01"}}
+    ]
+  }
+}

@@ -4,8 +4,10 @@ Sends POST /api/jobs to the workload entry point (the gateway) at a fixed rate. 
 requests are ordinary traffic: the services emit their own telemetry for them, so this
 module records nothing except how much it sent.
 """
+import json
 import logging
 import os
+import random
 import threading
 import time
 from collections import Counter
@@ -16,12 +18,40 @@ import httpx
 logger = logging.getLogger("experiments.workload")
 
 WORKLOAD_URL = os.getenv("WORKLOAD_URL", "http://gateway:8090")
+WORKLOADS_FILE = os.getenv(
+    "WORKLOADS_FILE",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "config", "workloads.json"),
+)
 MAX_SAMPLES = 5000  # 25 rps for 200s; beyond this only the counters keep growing
+
+
+def load_profile(target: str, path: str = WORKLOADS_FILE) -> dict | None:
+    """Per-target traffic profile from config/workloads.json, or None for the default (gateway) workload.
+
+    {"base_url": "...", "requests": [{"method": "GET", "path": "/jobs", "weight": 3, "json": {...}}, ...]}
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            profiles = json.load(fh)
+    except FileNotFoundError:
+        return None
+    profile = profiles.get(target)
+    if profile is None:
+        return None
+    if not profile.get("base_url") or not profile.get("requests"):
+        raise ValueError(f"workload profile for '{target}' needs base_url and a non-empty requests list")
+    for r in profile["requests"]:
+        if r.get("method", "GET") not in ("GET", "POST") or not str(r.get("path", "")).startswith("/"):
+            raise ValueError(f"workload profile for '{target}': bad request entry {r}")
+    return profile
 
 
 class WorkloadRunner:
     def __init__(self, rps: float, base_url: str = WORKLOAD_URL, n: int = 100000,
-                 timeout_s: float = 8.0, trace_prefix: str = "exp"):
+                 timeout_s: float = 8.0, trace_prefix: str = "exp", profile: dict | None = None):
+        self.profile = profile
+        if profile:
+            base_url = profile["base_url"]
         self.rps = rps
         self.n = n
         self.timeout_s = timeout_s
@@ -76,10 +106,13 @@ class WorkloadRunner:
 
     def _one(self) -> None:
         started = time.perf_counter()
+        headers = {"X-Trace-Id": f"{self.trace_prefix}-{time.time_ns() % 10**9:09d}"}
         try:
-            status = self._client.post(
-                "/api/jobs", params={"n": self.n},
-                headers={"X-Trace-Id": f"{self.trace_prefix}-{time.time_ns() % 10**9:09d}"}).status_code
+            if self.profile:
+                req = random.choices(self.profile["requests"], weights=[r.get("weight", 1) for r in self.profile["requests"]])[0]
+                status = self._client.request(req.get("method", "GET"), req["path"], json=req.get("json"), headers=headers).status_code
+            else:
+                status = self._client.post("/api/jobs", params={"n": self.n}, headers=headers).status_code
         except Exception:
             status = 0  # connection error or client timeout
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
