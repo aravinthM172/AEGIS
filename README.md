@@ -38,8 +38,26 @@ python tools/loadgen.py --rps 4 --seconds 60   # steady traffic
 POST /api/campaigns {"suite":"standard"}       # 8 scenarios x repetitions, builds the resilience model
 ```
 
-Tests: `python -m pytest tests -q` (210), and the fault agent: `fault-agent/tests` (32). Run both under Python 3.12,
+Tests: `python -m pytest tests -q`, and the fault agent: `fault-agent/tests`. Run both under Python 3.12,
 which is what the containers use.
+
+## Learn how it works
+
+```powershell
+python learn/serve.py                 # http://localhost:8200: every file explained, real source, diagrams, glossary
+```
+
+## Monitor your own app
+
+Any Docker-based service can be a target: add the telemetry middleware (a ~12-line wrapper for FastAPI apps), label
+its container `faultscope.injectable=true`, register it in `config/topology.json` and give it a traffic profile in
+`config/workloads.json`. A worked example, with measured results, is in [`targets/job-tracker/`](targets/job-tracker/README.md).
+
+## Before using it outside a local machine
+
+Read [`docs/commercial-readiness.md`](docs/commercial-readiness.md): dependency licences, security gaps and the
+limits of the evidence. The dev keys and tokens in this repository are for local use only. This repository has no
+LICENSE file yet, so by default all rights are reserved.
 
 ## What was measured (real runs on this repository)
 
